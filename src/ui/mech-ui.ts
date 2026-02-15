@@ -1,6 +1,6 @@
 import { Interface } from "ethers";
 import { launchPilot, promptTokenBalances } from "../mech";
-import { mint } from "../mech/ui-actions";
+import { mint, mintWithBroadcaster } from "../mech/ui-actions";
 import { status } from "../mech/status";
 import { confirmPromptCatch, confirmPromptCatchRetry } from "./confirm-ui";
 import { NetworkName } from "@railgun-community/shared-models";
@@ -37,7 +37,7 @@ export const runMechMenu = async (networkName: NetworkName) => {
     const choice = await deployPrompt.run().catch(confirmPromptCatch);
 
     if (choice === "mint-nft") {
-      await mint();
+      await mintWithBroadcaster();
       console.log("minted nft");
       runMechMenu(networkName);
     }

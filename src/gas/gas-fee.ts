@@ -108,7 +108,7 @@ export const getGasEstimates = async (
   const average = avg(blocks.map((b) => b.priorityFeePerGas[1] as bigint));
   const fast = avg(blocks.map((b) => b.priorityFeePerGas[2] as bigint));
 
-  const maxPriorityFeePerGas = average;
+  const maxPriorityFeePerGas = fast;
 
   const maxFeePerGas = maxPriorityFeePerGas + baseFeePerGas;
 

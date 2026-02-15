@@ -276,7 +276,7 @@ const getDisplayTransactions = async (
   return display.join("\n") + "\n";
 };
 
-const getSelfSignerWalletPrompt = async () => {
+export const getSelfSignerWalletPrompt = async () => {
   const walletNames = getWalletNames().map((i) => {
     return { name: i, message: i };
   });
@@ -315,7 +315,7 @@ const txScanReset = () => {
   // resetPrivateCache();
 };
 
-const sendBroadcastedTransaction = async (
+export const sendBroadcastedTransaction = async (
   transactionType: RailgunTransaction,
   provedTransaction: any,
   broadcasterSelection: any,
