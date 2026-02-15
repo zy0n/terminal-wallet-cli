@@ -1,4 +1,5 @@
 import {
+  delay,
   RailgunERC20Amount,
   RailgunNFTAmount,
 } from "@railgun-community/shared-models";
@@ -6,11 +7,13 @@ import {
   getCurrentRailgunAddress,
   getCurrentRailgunID,
 } from "../../wallet/wallet-util";
-import { sendSelfSignedTransaction } from "../../transaction/transaction-builder";
+import { sendBroadcastedTransaction, sendSelfSignedTransaction } from "../../transaction/transaction-builder";
 import { getCurrentNetwork } from "../../engine/engine";
 
 import { populateUnshieldTransaction } from "../railgun-primitives";
 import { findAvailableMech } from "../status";
+import { RailgunTransaction } from "../../models/transaction-models";
+import { generateHookedCall, pickBestBroadcaster, type HookedCrossContractInputs } from "./cross-contract";
 
 export async function depositIntoMech({
   /*
@@ -32,25 +35,75 @@ export async function depositIntoMech({
   }
 
   const { mechAddress } = entry;
+  const crossContractCalls: any[] = []
 
-  const transaction = await populateUnshieldTransaction({
-    unshieldNFTs: unshieldNFTs.map((entry) => ({
+  const crossContractInputs: HookedCrossContractInputs = {
+    relayAdaptUnshieldERC20Amounts: unshieldERC20s.map((entry) => ({
       ...entry,
       recipientAddress: mechAddress,
     })),
-    unshieldERC20s: unshieldERC20s.map((entry) => ({
+    relayAdaptShieldERC20Addresses: [],
+    relayAdaptUnshieldNFTAmounts: unshieldNFTs.map((entry) => ({
       ...entry,
       recipientAddress: mechAddress,
     })),
-  });
+    relayAdaptShieldNFTAddresses: [],
+  }
+  const selected = await pickBestBroadcaster()
+  console.log("SELECTD", selected)
 
-  const result = await sendSelfSignedTransaction(
-    selfSignerInfo(),
-    getCurrentNetwork(),
-    transaction,
-  );
-  console.log("Waiting for deposit...");
-  await result?.wait();
+
+  // const hookedProved = await generateHookedCall(
+  //   getCurrentNetwork(),
+  //   crossContractCalls,
+  //   crossContractInputs,
+  //   selected
+  // )
+  
+
+  // const transaction = await populateUnshieldTransaction({
+  //   unshieldNFTs: unshieldNFTs.map((entry) => ({
+  //     ...entry,
+  //     recipientAddress: mechAddress,
+  //   })),
+  //   unshieldERC20s: unshieldERC20s.map((entry) => ({
+  //     ...entry,
+  //     recipientAddress: mechAddress,
+  //   })),
+  // });
+
+  
+
+  // const result = await sendSelfSignedTransaction(
+  //   selfSignerInfo(),
+  //   getCurrentNetwork(),
+  //   transaction,
+  // );
+  // console.log("Waiting for deposit...");
+  // await result?.wait();
+
+  try {
+
+    const hookedProved = await generateHookedCall(
+      getCurrentNetwork(),
+      crossContractCalls,
+      crossContractInputs,
+      selected
+    );
+    
+    const result = await sendBroadcastedTransaction(
+      RailgunTransaction.UnshieldBase,
+      hookedProved,
+      selected.broadcasterSelection,
+      getCurrentNetwork(),
+    );
+    console.log("RESULT", result)
+    await delay(60_000)
+
+  } catch (error) {
+    console.log("ERROR", error)
+    await delay(60_000)
+  }
 }
 
 function selfSignerInfo() {

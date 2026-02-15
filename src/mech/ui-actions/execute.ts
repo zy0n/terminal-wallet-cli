@@ -10,7 +10,7 @@ import {
   getCurrentRailgunID,
 } from "../../wallet/wallet-util";
 
-import { sendSelfSignedTransaction } from "../../transaction/transaction-builder";
+import { sendBroadcastedTransaction, sendSelfSignedTransaction } from "../../transaction/transaction-builder";
 import { getCurrentNetwork } from "../../engine/engine";
 
 import { encodeMechExecute, encodeTranfer, encodeTranferFrom } from "../encode";
@@ -19,6 +19,8 @@ import { MetaTransaction } from "../http";
 import { populateCrossTransaction } from "../railgun-primitives";
 
 import deployments, { mechDeploymentTx } from "../deployments";
+import { generateHookedCall, pickBestBroadcaster, type HookedCrossContractInputs } from "./cross-contract";
+import { RailgunTransaction } from "../../models/transaction-models";
 
 export async function executeViaMech({
   unshieldNFTs = [],
@@ -108,28 +110,66 @@ export async function executeViaMech({
     })),
   ].map(viaMech);
 
-  const transaction = await populateCrossTransaction({
-    unshieldNFTs: [myNFTOut, ...unshieldNFTs],
-    unshieldERC20s,
-    crossContractCalls: [
-      ...deployment,
-      ...deposit,
-      ...execution,
-      ...withdrawal,
+  const selected = await pickBestBroadcaster()
+  
+  const crossContractCalls = [
+    ...deployment,
+    ...deposit,
+    ...execution,
+    ...withdrawal,
+  ];
+  const crossContractInputs: HookedCrossContractInputs = {
+    relayAdaptUnshieldERC20Amounts: unshieldERC20s,
+    relayAdaptShieldERC20Addresses: shieldERC20s.map(toOur0zk),
+    relayAdaptUnshieldNFTAmounts: [myNFTOut, ...unshieldNFTs],
+    relayAdaptShieldNFTAddresses: [
+      ...shieldNFTs.map(toOur0zk),
+      myNFTIn
     ],
-    shieldNFTs: [...shieldNFTs.map(toOur0zk), myNFTIn],
-    shieldERC20s: shieldERC20s.map(toOur0zk),
-  });
+  }
+
+  const hookedProved = await generateHookedCall(
+    getCurrentNetwork(),
+    crossContractCalls,
+    crossContractInputs,
+    selected
+  );
+
+
+  console.log("Waiting for Mint transaction...");
+      // await delay(60_000)
+
+
+  // const transaction = await populateCrossTransaction({
+  //   unshieldNFTs: [myNFTOut, ...unshieldNFTs],
+  //   unshieldERC20s,
+  //   crossContractCalls: [
+  //     ...deployment,
+  //     ...deposit,
+  //     ...execution,
+  //     ...withdrawal,
+  //   ],
+  //   shieldNFTs: [...shieldNFTs.map(toOur0zk), myNFTIn],
+  //   shieldERC20s: shieldERC20s.map(toOur0zk),
+  // });
 
   try {
-    const result = await sendSelfSignedTransaction(
-      selfSignerInfo(),
-      getCurrentNetwork(),
-      transaction,
-    );
+    // const result = await sendSelfSignedTransaction(
+    //   selfSignerInfo(),
+    //   getCurrentNetwork(),
+    //   transaction,
+    // );
 
-    console.log("Waiting for execution...");
-    await result?.wait();
+    const result = await sendBroadcastedTransaction(
+      RailgunTransaction.UnshieldBase,
+      hookedProved,
+      selected.broadcasterSelection,
+      getCurrentNetwork(),
+    );
+    console.log("RESULT", result)
+
+    // console.log("Waiting for execution...");
+    // await result?.wait();
   } catch (error) {
     console.error(error);
     process.exit(1);
