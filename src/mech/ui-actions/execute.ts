@@ -1,5 +1,6 @@
 import { toBeHex, zeroPadValue } from "ethers";
 import {
+  isDefined,
   RailgunERC20Amount,
   RailgunNFTAmount,
 } from "@railgun-community/shared-models";
@@ -134,6 +135,10 @@ export async function executeViaMech({
     crossContractInputs,
     selected
   );
+
+  if(!isDefined(hookedProved)){
+    throw new Error("No transaction to process.")
+  }
 
 
   console.log("Waiting for Mint transaction...");

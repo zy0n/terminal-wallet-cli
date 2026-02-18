@@ -11,6 +11,7 @@ import {
   depositIntoMech,
   executeViaMech,
 } from "../mech/ui-actions";
+import { promptMechBalances } from "../mech/tokens";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Select, Confirm } = require("enquirer");
@@ -133,8 +134,24 @@ export const runMechMenu = async (networkName: NetworkName) => {
         break;
       }
       case "withdraw": {
-        // TODO render token balance prompt for Mech token balances (skip in first demo version)
-        throw new Error("Withdraw flow not implemented yet.");
+        const balances = await promptMechBalances(networkName, mechAddress);
+        if (Object.keys(balances).length === 0) {
+          break;
+        }
+
+          const { native, ...erc20 } = balances;
+          if (native)
+            throw new Error("Native balance deposit not supported yet");
+
+          await operateMech({
+              shieldERC20s: Object.entries(erc20).map(
+                ([tokenAddress, amount]) => ({
+                  tokenAddress,
+                  amount,
+                }),
+              ),
+            });
+        // throw new Error("Withdraw flow not implemented yet.");
         break;
       }
       case "launch-pilot": {
