@@ -235,6 +235,7 @@ export const generateHookedCall = async (
   // get broadcaster info here.
 
   const { broadcasterSelection:selectedBroadcaster, selfSignerInfo } = selectedBroadcasterInfo;
+  const sendWithPublicWallet = !selectedBroadcaster;
 
   const hookedGasEstimate =
     await hookedGasEstimateForUnprovenCrossContractCalls(
@@ -256,6 +257,7 @@ export const generateHookedCall = async (
     hookedGasEstimate, // privateGasEstimate
     crossContractCalls, // crossContractCalls
     crossContractInputs, // crossContractInputs
+    sendWithPublicWallet, // sendWithPublicWallet
   );
 
   if (!hookedProvedTransaction) {

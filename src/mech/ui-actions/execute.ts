@@ -112,7 +112,8 @@ export async function executeViaMech({
   ].map(viaMech);
 
   const selected = await pickBestBroadcaster()
-  
+  const { broadcasterSelection, selfSignerInfo } = selected;
+
   const crossContractCalls = [
     ...deployment,
     ...deposit,
@@ -142,35 +143,25 @@ export async function executeViaMech({
 
 
   console.log("Waiting for Mint transaction...");
-      // await delay(60_000)
-
-
-  // const transaction = await populateCrossTransaction({
-  //   unshieldNFTs: [myNFTOut, ...unshieldNFTs],
-  //   unshieldERC20s,
-  //   crossContractCalls: [
-  //     ...deployment,
-  //     ...deposit,
-  //     ...execution,
-  //     ...withdrawal,
-  //   ],
-  //   shieldNFTs: [...shieldNFTs.map(toOur0zk), myNFTIn],
-  //   shieldERC20s: shieldERC20s.map(toOur0zk),
-  // });
 
   try {
-    // const result = await sendSelfSignedTransaction(
-    //   selfSignerInfo(),
-    //   getCurrentNetwork(),
-    //   transaction,
-    // );
-
-    const result = await sendBroadcastedTransaction(
-      RailgunTransaction.UnshieldBase,
-      hookedProved,
-      selected.broadcasterSelection,
-      getCurrentNetwork(),
-    );
+    let result;
+    if (broadcasterSelection) {
+      result = await sendBroadcastedTransaction(
+        RailgunTransaction.UnshieldBase,
+        hookedProved,
+        broadcasterSelection,
+        getCurrentNetwork(),
+      );
+    } else if (selfSignerInfo) {
+      result = await sendSelfSignedTransaction(
+        selfSignerInfo,
+        getCurrentNetwork(),
+        hookedProved,
+      );
+    } else {
+      throw new Error("No broadcaster or self-signer selected.");
+    }
     console.log("RESULT", result)
 
     // console.log("Waiting for execution...");

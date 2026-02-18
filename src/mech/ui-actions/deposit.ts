@@ -37,6 +37,7 @@ export async function depositIntoMech({
   const { mechAddress } = entry;
   
   const selected = await pickBestBroadcaster();
+  const { broadcasterSelection, selfSignerInfo } = selected;
   console.log("selected", selected)
   const transaction = await populateUnshieldTransaction({
     unshieldNFTs: unshieldNFTs.map((entry) => ({
@@ -47,17 +48,27 @@ export async function depositIntoMech({
       ...entry,
       recipientAddress: mechAddress,
     })),
-    broadcasterSelection: selected.broadcasterSelection,
+    broadcasterSelection,
   });
 
 
-  // change this to be broadcasted
-  const result = await sendBroadcastedTransaction(
-    RailgunTransaction.Unshield,
-    transaction,
-    selected.broadcasterSelection,
-    getCurrentNetwork(),
-  );
+  let result;
+  if (broadcasterSelection) {
+    result = await sendBroadcastedTransaction(
+      RailgunTransaction.Unshield,
+      transaction,
+      broadcasterSelection,
+      getCurrentNetwork(),
+    );
+  } else if (selfSignerInfo) {
+    result = await sendSelfSignedTransaction(
+      selfSignerInfo,
+      getCurrentNetwork(),
+      transaction,
+    );
+  } else {
+    throw new Error("No broadcaster or self-signer selected.");
+  }
   console.log("Waiting for deposit...");
   console.log("RESULT", result)
   await delay(60_000)
