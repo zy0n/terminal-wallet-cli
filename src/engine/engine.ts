@@ -11,7 +11,7 @@ import {
 } from "@railgun-community/wallet";
 import {
   FallbackProviderJsonConfig,
-  FeesSerialized,
+  type FeesSerialized,
   NetworkName,
   getAvailableProviderJSONs,
   isDefined,
@@ -31,14 +31,19 @@ const RAILGUN_DB_PATH = configDefaults.engine.databasePath;
 const RAILGUN_ARTIFACT_PATH = configDefaults.engine.artifactPath;
 
 let railgunEngineRunning = false;
+
+export let currentNetworkFees: FeesSerialized | undefined;
+
 export const isEngineRunning = () => {
   return railgunEngineRunning;
 };
 
 const interceptLog = {
-  log: (log: string) => { },
+  log: (log: string) => {
+    console.log(log);
+  },
   error: (err: any) => {
-    console.log(err.message);
+    console.log(err);
   },
 };
 
@@ -197,8 +202,9 @@ export const getProviderPromptOptions = (chainName: NetworkName) => {
       const providerEnabled = customProviders[provider];
       return {
         name: provider,
-        message: `[${providerEnabled ? "Enabled ".green.dim : "Disabled".yellow.dim
-          }] ${provider}`,
+        message: `[${
+          providerEnabled ? "Enabled ".green.dim : "Disabled".yellow.dim
+        }] ${provider}`,
       };
     });
 
@@ -260,6 +266,8 @@ export const loadProviderList = async (chainName: NetworkName) => {
   const feesUnshield = BigInt(
     feesSerialized.unshieldFeeV3 ?? feesSerialized.shieldFeeV2,
   );
+
+  currentNetworkFees = feesSerialized
 
   setRailgunFees(chainName, feesShield, feesUnshield);
   loadedRailgunNetworks[chainName] = true;
