@@ -1,3 +1,4 @@
+import { currentNetworkFees } from "../engine/engine";
 import {
   ensureHttpServer,
   MetaTransaction,
@@ -37,15 +38,18 @@ const encodeBalanceSpoofRequests = (
   );
 };
 
-const RAILGUN_FEE_BPS = 25n; // 0.25%
+// const RAILGUN_FEE_BPS = 25n; // 0.25%
 
-const subtractRailgunFee = (balances: Balances) =>
-  Object.fromEntries(
+const subtractRailgunFee = (balances: Balances) => {
+    const RAILGUN_FEE_BPS = BigInt(currentNetworkFees?.shieldFeeV2 ?? 25)
+  
+ return Object.fromEntries(
     Object.entries(balances).map(([token, balance]) => [
       token,
       balance - (balance * RAILGUN_FEE_BPS) / 10000n,
     ]),
   );
+}
 
 export const launchPilot = async (
   mechAddress: `0x${string}`,

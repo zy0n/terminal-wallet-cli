@@ -1,5 +1,6 @@
 import { TransactionRequest } from "ethers";
 import {
+  calculateBroadcasterFeeERC20Amount,
   gasEstimateForUnprovenUnshield,
   generateUnshieldProof,
   populateProvedUnshield,
@@ -7,6 +8,8 @@ import {
 import {
   RailgunERC20AmountRecipient,
   RailgunNFTAmountRecipient,
+  RailgunPopulateTransactionResponse,
+  SelectedBroadcaster,
   TXIDVersion,
 } from "@railgun-community/shared-models";
 
@@ -25,21 +28,23 @@ export async function populateUnshieldTransaction({
   // Assets to unshield FROM Railgun (these will be available in contract calls)
   unshieldNFTs,
   unshieldERC20s,
+  broadcasterSelection, // Optional for broadcasting
 }: {
   unshieldNFTs: RailgunNFTAmountRecipient[];
   unshieldERC20s: RailgunERC20AmountRecipient[];
-}): Promise<TransactionRequest> {
+  broadcasterSelection?: SelectedBroadcaster;
+}): Promise<any> {
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
   const networkName = getCurrentNetwork();
   const railgunWalletID = getCurrentRailgunID();
 
-  const gasDetailsResult = await getTransactionGasDetails(networkName);
+  const gasDetailsResult = await getTransactionGasDetails(networkName, broadcasterSelection);
   if (!gasDetailsResult) throw new Error("Failed to get gas details");
 
   const encryptionKey = await getSaltedPassword();
   if (!encryptionKey) throw new Error("Failed to get encryption key");
 
-  const sendWithPublicWallet = true;
+  const sendWithPublicWallet = !broadcasterSelection;
 
   const { gasEstimate } = await gasEstimateForUnprovenUnshield(
     txIDVersion,
@@ -53,12 +58,12 @@ export async function populateUnshieldTransaction({
     sendWithPublicWallet,
   );
 
-  const { estimatedGasDetails } = await getOutputGasEstimate(
+  const { estimatedGasDetails, broadcasterFeeERC20Recipient } = await getOutputGasEstimate(
     gasDetailsResult.originalGasDetails,
     gasEstimate,
     gasDetailsResult.feeTokenInfo,
     gasDetailsResult.feeTokenDetails,
-    undefined,
+    broadcasterSelection,
     gasDetailsResult.overallBatchMinGasPrice,
   );
 
@@ -69,23 +74,23 @@ export async function populateUnshieldTransaction({
     encryptionKey,
     unshieldERC20s,
     unshieldNFTs,
-    undefined,
+    broadcasterFeeERC20Recipient,
     sendWithPublicWallet,
     gasDetailsResult.overallBatchMinGasPrice,
     () => console.log(`Proof generation in progress...`),
   );
 
-  const { transaction, nullifiers } = await populateProvedUnshield(
+  const provedTransaction = await populateProvedUnshield(
     txIDVersion,
     networkName,
     railgunWalletID,
     unshieldERC20s,
     unshieldNFTs,
-    undefined, // No broadcaster fee
+    broadcasterFeeERC20Recipient,
     sendWithPublicWallet,
     gasDetailsResult.overallBatchMinGasPrice,
     estimatedGasDetails,
   );
 
-  return transaction;
+  return provedTransaction;
 }

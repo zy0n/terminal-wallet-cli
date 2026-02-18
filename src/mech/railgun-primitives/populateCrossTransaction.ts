@@ -9,6 +9,7 @@ import {
   RailgunERC20AmountRecipient,
   RailgunNFTAmount,
   RailgunNFTAmountRecipient,
+  SelectedBroadcaster,
   TXIDVersion,
 } from "@railgun-community/shared-models";
 
@@ -34,24 +35,26 @@ export async function populateCrossTransaction({
   // Assets to shield back INTO Railgun (optional, can be empty)
   shieldNFTs,
   shieldERC20s,
+  broadcasterSelection, // Optional for broadcasting
 }: {
   unshieldNFTs: RailgunNFTAmount[];
   unshieldERC20s?: RailgunERC20Amount[];
   crossContractCalls: ContractTransaction[];
   shieldNFTs?: RailgunNFTAmountRecipient[];
   shieldERC20s?: RailgunERC20AmountRecipient[];
-}): Promise<TransactionRequest> {
+  broadcasterSelection?: SelectedBroadcaster;
+}): Promise<any> {
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
   const networkName = getCurrentNetwork();
   const railgunWalletID = getCurrentRailgunID();
 
-  const gasDetailsResult = await getTransactionGasDetails(networkName);
+  const gasDetailsResult = await getTransactionGasDetails(networkName, broadcasterSelection);
   if (!gasDetailsResult) throw new Error("Failed to get gas details");
 
   const encryptionKey = await getSaltedPassword();
   if (!encryptionKey) throw new Error("Failed to get encryption key");
 
-  const sendWithPublicWallet = true;
+  const sendWithPublicWallet = !broadcasterSelection;
 
   const gasEstimateResponse = await gasEstimateForUnprovenCrossContractCalls(
     txIDVersion,
@@ -76,7 +79,7 @@ export async function populateCrossTransaction({
     gasEstimateResponse.gasEstimate,
     gasDetailsResult.feeTokenInfo,
     gasDetailsResult.feeTokenDetails,
-    undefined,
+    broadcasterSelection,
     gasDetailsResult.overallBatchMinGasPrice,
   );
 
@@ -113,5 +116,5 @@ export async function populateCrossTransaction({
     gasDetailsResult.overallBatchMinGasPrice,
     finalGasDetails.estimatedGasDetails,
   );
-  return response.transaction;
+  return response;
 }

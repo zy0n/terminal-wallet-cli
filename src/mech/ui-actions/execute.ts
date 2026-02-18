@@ -3,7 +3,7 @@ import {
   RailgunERC20Amount,
   RailgunNFTAmount,
 } from "@railgun-community/shared-models";
-import { NFTTokenType } from "@railgun-community/wallet";
+import { loadProvider, NFTTokenType } from "@railgun-community/wallet";
 
 import {
   getCurrentRailgunAddress,
@@ -11,7 +11,7 @@ import {
 } from "../../wallet/wallet-util";
 
 import { sendBroadcastedTransaction, sendSelfSignedTransaction } from "../../transaction/transaction-builder";
-import { getCurrentNetwork } from "../../engine/engine";
+import { currentNetworkFees, getCurrentNetwork } from "../../engine/engine";
 
 import { encodeMechExecute, encodeTranfer, encodeTranferFrom } from "../encode";
 import { findAvailableMech } from "../status";
@@ -176,10 +176,11 @@ export async function executeViaMech({
   }
 }
 
-function minusUnshieldFee(amount: bigint, feeBP: bigint = 25n) {
+function minusUnshieldFee(amount: bigint) {
+  const FEE_BP = BigInt(currentNetworkFees?.unshieldFeeV2 ?? 25)
   const BASIS_POINTS = 10000n;
 
-  const base = amount - (amount * feeBP) / BASIS_POINTS;
+  const base = amount - (amount * FEE_BP) / BASIS_POINTS;
   // const fee = amount - base;
   return base;
 }
