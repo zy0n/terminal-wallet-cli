@@ -19,10 +19,11 @@ import {
 } from "./balance-cache";
 import {
   getChainForName,
+  getFirstPollingProviderForChain,
   getWrappedTokenInfoForChain,
 } from "../network/network-util";
 import { getTokenInfo } from "./token-util";
-import { formatUnits } from "ethers";
+import { Contract, formatUnits } from "ethers";
 import "colors";
 import {
   getCurrentRailgunID,
@@ -39,11 +40,60 @@ type PrivateNFTDisplayBalance = {
   tokenAddress: string;
   tokenSubID: string;
   amount: bigint;
+  tokenName: string;
 };
+
+const nftTokenNameCache: Map<string, string> = new Map();
 
 const truncateAddress = (address: string, len = 6): string => {
   if (address.length <= len * 2 + 2) return address;
   return `${address.slice(0, len + 2)}...${address.slice(-len)}`;
+};
+
+const toTokenIdString = (tokenSubID: string | number | bigint): string => {
+  if (typeof tokenSubID === "bigint") {
+    return tokenSubID.toString();
+  }
+  if (typeof tokenSubID === "number") {
+    return BigInt(Math.trunc(tokenSubID)).toString();
+  }
+
+  const value = tokenSubID.trim();
+  if (/^0x[0-9a-fA-F]+$/.test(value)) {
+    return BigInt(value).toString();
+  }
+  if (/^\d+$/.test(value)) {
+    return BigInt(value).toString();
+  }
+  return value;
+};
+
+const getNFTTokenName = async (
+  chainName: NetworkName,
+  tokenAddress: string,
+): Promise<string> => {
+  const cacheKey = `${chainName}:${tokenAddress.toLowerCase()}`;
+  const cached = nftTokenNameCache.get(cacheKey);
+  if (isDefined(cached)) {
+    return cached;
+  }
+
+  try {
+    const provider = getFirstPollingProviderForChain(chainName);
+    const contract = new Contract(
+      tokenAddress,
+      ["function name() view returns (string)"],
+      provider,
+    );
+    const name = (await contract.name()) as string;
+    const normalized = name?.trim?.() || truncateAddress(tokenAddress);
+    nftTokenNameCache.set(cacheKey, normalized);
+    return normalized;
+  } catch {
+    const fallback = truncateAddress(tokenAddress);
+    nftTokenNameCache.set(cacheKey, fallback);
+    return fallback;
+  }
 };
 
 const getPrivateNFTBalancesForChain = async (
@@ -63,7 +113,7 @@ const getPrivateNFTBalancesForChain = async (
       {},
   );
 
-  return bucketBalances
+  const nftBalances = bucketBalances
     .filter((entry: any) => {
       const tokenType = entry?.tokenData?.tokenType;
       const isNFTByType =
@@ -71,11 +121,21 @@ const getPrivateNFTBalancesForChain = async (
       const hasPositiveBalance = BigInt(entry?.balance ?? 0) > 0n;
       return isNFTByType && hasPositiveBalance;
     })
-    .map((entry: any) => ({
-      tokenAddress: entry.tokenData.tokenAddress,
-      tokenSubID: entry.tokenData.tokenSubID?.toString?.() ?? "0",
-      amount: BigInt(entry.balance),
-    }));
+    .map((entry: any) => {
+      const { tokenAddress } = entry.tokenData;
+      return {
+        tokenAddress,
+        tokenSubID: toTokenIdString(entry.tokenData.tokenSubID?.toString?.() ?? "0"),
+        amount: BigInt(entry.balance),
+      };
+    });
+
+  return Promise.all(
+    nftBalances.map(async (entry) => ({
+      ...entry,
+      tokenName: await getNFTTokenName(chainName, entry.tokenAddress),
+    })),
+  );
 };
 
 export const getWrappedTokenBalance = async (
@@ -248,7 +308,7 @@ export const getPrivateDisplayBalances = async (
     : [];
 
   if (bucketType !== RailgunWalletBalanceBucket.Spendable) {
-    if (balances.length === 0) {
+    if (balances.length === 0 && nftBalances.length === 0) {
       return "";
     }
     if (!isPrivate) {
@@ -291,7 +351,7 @@ export const getPrivateDisplayBalances = async (
     display.push(`${"NFTs".cyan.bold}:`);
     for (const [index, nft] of nftBalances.entries()) {
       display.push(
-        `  [${index}] ${truncateAddress(nft.tokenAddress)} (ID: ${nft.tokenSubID}) x${nft.amount.toString()}`,
+        `  [${index}] ${nft.tokenName} (ID: ${nft.tokenSubID}) x${nft.amount.toString()}`,
       );
     }
   }

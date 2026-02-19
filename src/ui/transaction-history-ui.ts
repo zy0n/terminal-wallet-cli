@@ -17,7 +17,7 @@ import {
   getCurrentWalletPublicAddress,
 } from "../wallet/wallet-util";
 import { getTokenInfo } from "../balance/token-util";
-import { Interface, Log } from "ethers";
+import { Contract, Interface, Log } from "ethers";
 import { readablePrecision } from "../util/util";
 import {
   confirmPromptCatch,
@@ -165,20 +165,70 @@ const withAssetType = (assetType: AssetTypeLabel, text: string): string => {
   return `[${assetType}] ${text}`;
 };
 
-const formatNFTSummary = (
+const nftTokenNameCache: Map<string, string> = new Map();
+
+const toTokenIdString = (tokenSubID: string | number | bigint): string => {
+  if (typeof tokenSubID === "bigint") {
+    return tokenSubID.toString();
+  }
+  if (typeof tokenSubID === "number") {
+    return BigInt(Math.trunc(tokenSubID)).toString();
+  }
+
+  const value = tokenSubID.trim();
+  if (/^0x[0-9a-fA-F]+$/.test(value)) {
+    return BigInt(value).toString();
+  }
+  if (/^\d+$/.test(value)) {
+    return BigInt(value).toString();
+  }
+  return value;
+};
+
+const getNFTTokenName = async (
+  chainName: NetworkName,
+  tokenAddress: string,
+): Promise<string> => {
+  const cacheKey = `${chainName}:${tokenAddress.toLowerCase()}`;
+  const cached = nftTokenNameCache.get(cacheKey);
+  if (isDefined(cached)) {
+    return cached;
+  }
+
+  try {
+    const provider = getFirstPollingProviderForChain(chainName);
+    const contract = new Contract(
+      tokenAddress,
+      ["function name() view returns (string)"],
+      provider,
+    );
+    const name = (await contract.name()) as string;
+    const normalized = name?.trim?.() || truncateHash(tokenAddress, 6);
+    nftTokenNameCache.set(cacheKey, normalized);
+    return normalized;
+  } catch {
+    const fallback = truncateHash(tokenAddress, 6);
+    nftTokenNameCache.set(cacheKey, fallback);
+    return fallback;
+  }
+};
+
+const formatNFTSummary = async (
+  chainName: NetworkName,
   nfts: Array<{
     nftAddress: string;
     tokenSubID: string | number | bigint;
     amount: string | number | bigint;
   }>,
-): string => {
+): Promise<string> => {
   if (nfts.length === 0) return "";
-  return nfts
-    .map(
-      ({ nftAddress, tokenSubID, amount }) =>
-        `${truncateHash(nftAddress, 6)}#${tokenSubID.toString()} x${amount.toString()}`,
-    )
-    .join(", ");
+  const formatted = await Promise.all(
+    nfts.map(async ({ nftAddress, tokenSubID, amount }) => {
+      const tokenName = await getNFTTokenName(chainName, nftAddress);
+      return `${tokenName}#${toTokenIdString(tokenSubID)} x${amount.toString()}`;
+    }),
+  );
+  return formatted.join(", ");
 };
 
 const inferAssetTypeForTransferEvent = async (
@@ -269,17 +319,17 @@ const inferWalletActionsFromHistoryItem = async (
   }
 
   if (item.receiveNFTAmounts.length > 0) {
-    const nfts = formatNFTSummary(item.receiveNFTAmounts);
+    const nfts = await formatNFTSummary(chainName, item.receiveNFTAmounts);
     pushUnique(actions, withAssetType("NFT", `Received privately ${nfts}`));
   }
 
   if (item.transferNFTAmounts.length > 0) {
-    const nfts = formatNFTSummary(item.transferNFTAmounts);
+    const nfts = await formatNFTSummary(chainName, item.transferNFTAmounts);
     pushUnique(actions, withAssetType("NFT", `Sent privately ${nfts}`));
   }
 
   if (item.unshieldNFTAmounts.length > 0) {
-    const nfts = formatNFTSummary(item.unshieldNFTAmounts);
+    const nfts = await formatNFTSummary(chainName, item.unshieldNFTAmounts);
     const firstRecipient = item.unshieldNFTAmounts[0]?.recipientAddress;
     if (isDefined(firstRecipient) && firstRecipient.length > 0) {
       pushUnique(
@@ -964,17 +1014,19 @@ const summaryAmountString = (summaries: TokenSummary[]): string => {
     .join(", ");
 };
 
-const formatNFTListSummary = (
+const formatNFTListSummary = async (
+  chainName: NetworkName,
   nfts: Array<{
     nftAddress: string;
     tokenSubID: string | number | bigint;
     amount: string | number | bigint;
   }>,
-): string => {
+): Promise<string> => {
   if (nfts.length === 0) return "";
   if (nfts.length === 1) {
     const [nft] = nfts;
-    return `${truncateHash(nft.nftAddress, 4)}#${nft.tokenSubID.toString()} x${nft.amount.toString()}`;
+    const tokenName = await getNFTTokenName(chainName, nft.nftAddress);
+    return `${tokenName}#${toTokenIdString(nft.tokenSubID)} x${nft.amount.toString()}`;
   }
   return `${nfts.length} NFTs`;
 };
@@ -1024,15 +1076,15 @@ const buildTxSummaryLine = async (
   let nftSummary = "";
   if (amountStr.length === 0) {
     if (actions.includes("UNSHIELD")) {
-      nftSummary = formatNFTListSummary(item.unshieldNFTAmounts);
+      nftSummary = await formatNFTListSummary(chainName, item.unshieldNFTAmounts);
     } else if (actions.includes("SEND")) {
-      nftSummary = formatNFTListSummary(item.transferNFTAmounts);
+      nftSummary = await formatNFTListSummary(chainName, item.transferNFTAmounts);
     } else if (actions.includes("SHIELD") || actions.includes("RECEIVE")) {
-      nftSummary = formatNFTListSummary(item.receiveNFTAmounts);
+      nftSummary = await formatNFTListSummary(chainName, item.receiveNFTAmounts);
     }
 
     if (nftSummary.length === 0) {
-      nftSummary = formatNFTListSummary([
+      nftSummary = await formatNFTListSummary(chainName, [
         ...item.receiveNFTAmounts,
         ...item.transferNFTAmounts,
         ...item.unshieldNFTAmounts,
@@ -1234,8 +1286,9 @@ const buildTxDetailView = async (
   if (item.receiveNFTAmounts.length > 0) {
     lines.push(`  ${"Received NFTs".green.bold}:`);
     for (const [i, nft] of item.receiveNFTAmounts.entries()) {
+      const tokenName = await getNFTTokenName(chainName, nft.nftAddress);
       lines.push(
-        `    [${i}] ${truncateHash(nft.nftAddress)} (ID: ${nft.tokenSubID}) x${nft.amount}`,
+        `    [${i}] ${tokenName} (ID: ${toTokenIdString(nft.tokenSubID)}) x${nft.amount}`,
       );
       if (isDefined(nft.senderAddress)) {
         lines.push(`        ${"From".grey}: ${nft.senderAddress}`);
@@ -1247,8 +1300,9 @@ const buildTxDetailView = async (
   if (item.transferNFTAmounts.length > 0) {
     lines.push(`  ${"Transferred NFTs".red.bold}:`);
     for (const [i, nft] of item.transferNFTAmounts.entries()) {
+      const tokenName = await getNFTTokenName(chainName, nft.nftAddress);
       lines.push(
-        `    [${i}] ${truncateHash(nft.nftAddress)} (ID: ${nft.tokenSubID}) x${nft.amount}`,
+        `    [${i}] ${tokenName} (ID: ${toTokenIdString(nft.tokenSubID)}) x${nft.amount}`,
       );
       if (isDefined(nft.recipientAddress)) {
         lines.push(`        ${"To".grey}: ${nft.recipientAddress}`);
@@ -1260,8 +1314,9 @@ const buildTxDetailView = async (
   if (item.unshieldNFTAmounts.length > 0) {
     lines.push(`  ${"Unshielded NFTs".yellow.bold}:`);
     for (const [i, nft] of item.unshieldNFTAmounts.entries()) {
+      const tokenName = await getNFTTokenName(chainName, nft.nftAddress);
       lines.push(
-        `    [${i}] ${truncateHash(nft.nftAddress)} (ID: ${nft.tokenSubID}) x${nft.amount}`,
+        `    [${i}] ${tokenName} (ID: ${toTokenIdString(nft.tokenSubID)}) x${nft.amount}`,
       );
       if (isDefined(nft.recipientAddress)) {
         lines.push(`        ${"To".grey}: ${nft.recipientAddress}`);

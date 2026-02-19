@@ -26,6 +26,7 @@ import { getChainForName, remoteConfig } from "../network/network-util";
 import { getProviderObjectFromURL } from "../models/network-models";
 import { walletManager } from "../wallet/wallet-manager";
 import { saveKeychainFile } from "../wallet/wallet-cache";
+import { pushUILog } from "../ui/log-ui";
 
 const RAILGUN_DB_PATH = configDefaults.engine.databasePath;
 const RAILGUN_ARTIFACT_PATH = configDefaults.engine.artifactPath;
@@ -40,10 +41,10 @@ export const isEngineRunning = () => {
 
 const interceptLog = {
   log: (log: string) => {
-    console.log(log);
+    pushUILog(log, "log");
   },
   error: (err: any) => {
-    console.log(err);
+    pushUILog(err, "error");
   },
 };
 

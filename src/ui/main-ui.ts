@@ -70,6 +70,7 @@ import { getScanProgressString, walletManager } from "../wallet/wallet-manager";
 import "colors";
 import { getStatusText, setStatusText } from "./status-ui";
 import { runRPCEditorPrompt } from "./provider-ui";
+import { getMainUILogComponent } from "./log-ui";
 
 import { runMechMenu } from "./mech-ui";
 import { runTransactionHistoryViewer } from "./transaction-history-ui";
@@ -342,6 +343,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       `;
 
       const statusString = getStatusText();
+      const logComponent = getMainUILogComponent();
       const scanString = getScanProgressString();
       const balanceScanned =
         scanString === "" ? statusString : `${scanString}${statusString}`;
@@ -365,6 +367,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         walletInfoString,
         broadcasterStatus,
         balanceBlock,
+        logComponent,
         `${
           !isMenuResponsive()
             ? "Auto Refresh Disabled, Refresh on Movement Enabled.\n".yellow.dim
