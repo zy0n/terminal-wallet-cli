@@ -774,6 +774,11 @@ const colorize = (text: string, color: string): string => {
 
 type EvaluatedTxAction = "SHIELD" | "UNSHIELD" | "SEND" | "RECEIVE";
 
+type EvaluatedActionWithAsset = {
+  action: EvaluatedTxAction;
+  assetType: AssetTypeLabel;
+};
+
 const hasPositiveAmount = (
   value: Optional<string | number | bigint>,
 ): boolean => {
@@ -794,14 +799,14 @@ const hasPositiveAmount = (
   return BigInt(value) > 0n;
 };
 
-const evaluateTxActions = (
+const evaluateTxActionsWithAsset = (
   item: TransactionHistoryItem,
-): EvaluatedTxAction[] => {
-  const actions: EvaluatedTxAction[] = [];
+): EvaluatedActionWithAsset[] => {
+  const actions: EvaluatedActionWithAsset[] = [];
 
-  const addAction = (action: EvaluatedTxAction) => {
-    if (!actions.includes(action)) {
-      actions.push(action);
+  const addAction = (action: EvaluatedTxAction, assetType: AssetTypeLabel) => {
+    if (!actions.find((x) => x.action === action && x.assetType === assetType)) {
+      actions.push({ action, assetType });
     }
   };
 
@@ -809,36 +814,63 @@ const evaluateTxActions = (
     hasPositiveAmount(x.shieldFee),
   );
 
-  const hasUnshieldFee =
-    item.unshieldERC20Amounts.some((x) => hasPositiveAmount(x.unshieldFee)) ||
+  const hasUnshieldERC20 =
+    item.unshieldERC20Amounts.length > 0 ||
+    item.unshieldERC20Amounts.some((x) => hasPositiveAmount(x.unshieldFee));
+
+  const hasUnshieldNFT =
+    item.unshieldNFTAmounts.length > 0 ||
     item.unshieldNFTAmounts.some((x) => hasPositiveAmount(x.unshieldFee));
 
-  const hasUnshieldAmounts =
-    item.unshieldERC20Amounts.length > 0 || item.unshieldNFTAmounts.length > 0;
+  const hasSendERC20 = item.transferERC20Amounts.length > 0;
+  const hasSendNFT = item.transferNFTAmounts.length > 0;
 
-  const hasSendAmounts =
-    item.transferERC20Amounts.length > 0 || item.transferNFTAmounts.length > 0;
-
-  const hasReceiveAmounts =
-    item.receiveERC20Amounts.length > 0 || item.receiveNFTAmounts.length > 0;
+  const hasReceiveERC20 = item.receiveERC20Amounts.length > 0;
+  const hasReceiveNFT = item.receiveNFTAmounts.length > 0;
 
   if (hasShieldFee) {
-    addAction("SHIELD");
+    addAction("SHIELD", "ERC20");
   }
 
-  if (hasUnshieldAmounts || hasUnshieldFee) {
-    addAction("UNSHIELD");
+  if (hasUnshieldERC20) {
+    addAction("UNSHIELD", "ERC20");
   }
 
-  if (hasSendAmounts) {
-    addAction("SEND");
+  if (hasUnshieldNFT) {
+    addAction("UNSHIELD", "NFT");
   }
 
-  if (hasReceiveAmounts && !hasShieldFee) {
-    addAction("RECEIVE");
+  if (hasSendERC20) {
+    addAction("SEND", "ERC20");
+  }
+
+  if (hasSendNFT) {
+    addAction("SEND", "NFT");
+  }
+
+  if (hasReceiveERC20 && !hasShieldFee) {
+    addAction("RECEIVE", "ERC20");
+  }
+
+  if (hasReceiveNFT) {
+    addAction("RECEIVE", "NFT");
   }
 
   return actions;
+};
+
+const evaluateTxActions = (
+  item: TransactionHistoryItem,
+): EvaluatedTxAction[] => {
+  return evaluateTxActionsWithAsset(item).reduce<EvaluatedTxAction[]>(
+    (list, entry) => {
+      if (!list.includes(entry.action)) {
+        list.push(entry.action);
+      }
+      return list;
+    },
+    [],
+  );
 };
 
 const actionColor = (action: EvaluatedTxAction): string => {
@@ -857,13 +889,15 @@ const actionColor = (action: EvaluatedTxAction): string => {
 };
 
 const formatActionList = (item: TransactionHistoryItem): string => {
-  const actions = evaluateTxActions(item);
+  const actions = evaluateTxActionsWithAsset(item);
   if (actions.length === 0) {
     return "UNKNOWN".grey;
   }
 
   return actions
-    .map((action) => colorize(action, actionColor(action)))
+    .map((entry) =>
+      colorize(`${entry.action} [${entry.assetType}]`, actionColor(entry.action)),
+    )
     .join(", ");
 };
 
@@ -930,6 +964,21 @@ const summaryAmountString = (summaries: TokenSummary[]): string => {
     .join(", ");
 };
 
+const formatNFTListSummary = (
+  nfts: Array<{
+    nftAddress: string;
+    tokenSubID: string | number | bigint;
+    amount: string | number | bigint;
+  }>,
+): string => {
+  if (nfts.length === 0) return "";
+  if (nfts.length === 1) {
+    const [nft] = nfts;
+    return `${truncateHash(nft.nftAddress, 4)}#${nft.tokenSubID.toString()} x${nft.amount.toString()}`;
+  }
+  return `${nfts.length} NFTs`;
+};
+
 // ─── Build Summary Line for List View ───────────────────────────────────────
 
 const buildTxSummaryLine = async (
@@ -971,12 +1020,33 @@ const buildTxSummaryLine = async (
 
   const tokenSummaries = await buildTokenSummaries(chainName, primaryAmounts);
   const amountStr = summaryAmountString(tokenSummaries);
+
+  let nftSummary = "";
+  if (amountStr.length === 0) {
+    if (actions.includes("UNSHIELD")) {
+      nftSummary = formatNFTListSummary(item.unshieldNFTAmounts);
+    } else if (actions.includes("SEND")) {
+      nftSummary = formatNFTListSummary(item.transferNFTAmounts);
+    } else if (actions.includes("SHIELD") || actions.includes("RECEIVE")) {
+      nftSummary = formatNFTListSummary(item.receiveNFTAmounts);
+    }
+
+    if (nftSummary.length === 0) {
+      nftSummary = formatNFTListSummary([
+        ...item.receiveNFTAmounts,
+        ...item.transferNFTAmounts,
+        ...item.unshieldNFTAmounts,
+      ]);
+    }
+  }
+
+  const amountOrNft = amountStr.length > 0 ? amountStr : nftSummary.length > 0 ? `[NFT] ${nftSummary}` : "—";
   const indexStr = `[${String(index).padStart(3, " ")}]`.grey;
   const tagStr = actionBadgeForSummary(item);
   const timeStr = time.grey;
   const blockStr = block.dim;
 
-  const message = `${indexStr} ${tagStr} ${amountStr ? amountStr : "—"} ${timeStr} ${blockStr}`;
+  const message = `${indexStr} ${tagStr} ${amountOrNft} ${timeStr} ${blockStr}`;
 
   return { name: `tx-${index}`, message };
 };

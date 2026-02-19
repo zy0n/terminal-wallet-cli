@@ -1,7 +1,9 @@
 import {
   NETWORK_CONFIG,
+  ChainType,
   NetworkName,
   RailgunWalletBalanceBucket,
+  TXIDVersion,
   isDefined,
 } from "@railgun-community/shared-models";
 import {
@@ -31,6 +33,50 @@ import { readablePrecision } from "../util/util";
 import { stripColors } from "colors";
 import configDefaults from "../config/config-defaults";
 import { walletManager } from "../wallet/wallet-manager";
+import { walletForID } from "@railgun-community/wallet";
+
+type PrivateNFTDisplayBalance = {
+  tokenAddress: string;
+  tokenSubID: string;
+  amount: bigint;
+};
+
+const truncateAddress = (address: string, len = 6): string => {
+  if (address.length <= len * 2 + 2) return address;
+  return `${address.slice(0, len + 2)}...${address.slice(-len)}`;
+};
+
+const getPrivateNFTBalancesForChain = async (
+  chainName: NetworkName,
+  balanceBucket: RailgunWalletBalanceBucket,
+): Promise<PrivateNFTDisplayBalance[]> => {
+  const chain = getChainForName(chainName);
+  const wallet = walletForID(getCurrentRailgunID());
+
+  const balancesByBucket = await wallet.getTokenBalancesByBucket(
+    TXIDVersion.V2_PoseidonMerkle,
+    { id: chain.id, type: ChainType.EVM },
+  );
+
+  const bucketBalances = Object.values(
+    (balancesByBucket as Record<string, Record<string, any>>)[balanceBucket] ??
+      {},
+  );
+
+  return bucketBalances
+    .filter((entry: any) => {
+      const tokenType = entry?.tokenData?.tokenType;
+      const isNFTByType =
+        tokenType === 1 || tokenType === "1" || tokenType === 2 || tokenType === "2";
+      const hasPositiveBalance = BigInt(entry?.balance ?? 0) > 0n;
+      return isNFTByType && hasPositiveBalance;
+    })
+    .map((entry: any) => ({
+      tokenAddress: entry.tokenData.tokenAddress,
+      tokenSubID: entry.tokenData.tokenSubID?.toString?.() ?? "0",
+      amount: BigInt(entry.balance),
+    }));
+};
 
 export const getWrappedTokenBalance = async (
   chainName: NetworkName,
@@ -197,6 +243,9 @@ export const getPrivateDisplayBalances = async (
   const balances = isPrivate
     ? await getPrivateERC20BalancesForChain(chainName, bucketType)
     : await getPublicERC20BalancesForChain(chainName, true);
+  const nftBalances = isPrivate
+    ? await getPrivateNFTBalancesForChain(chainName, bucketType).catch(() => [])
+    : [];
 
   if (bucketType !== RailgunWalletBalanceBucket.Spendable) {
     if (balances.length === 0) {
@@ -217,7 +266,7 @@ export const getPrivateDisplayBalances = async (
   const headerPad = "".padEnd(70 - headLen, "=");
   display.push(`${headerLine} ${headerPad.grey}`);
 
-  if (balances.length === 0) {
+  if (balances.length === 0 && nftBalances.length === 0) {
     const balanceHeader = walletManager.menuLoaded ? "NO" : "LOADING";
     display.push(`${balanceHeader} Balances...`.grey);
     display.push("".padEnd(70, "=").grey);
@@ -233,6 +282,18 @@ export const getPrivateDisplayBalances = async (
       maxSymbolLength,
     );
     display.push(balanceDisplayString);
+  }
+
+  if (nftBalances.length > 0) {
+    if (balances.length > 0) {
+      display.push("");
+    }
+    display.push(`${"NFTs".cyan.bold}:`);
+    for (const [index, nft] of nftBalances.entries()) {
+      display.push(
+        `  [${index}] ${truncateAddress(nft.tokenAddress)} (ID: ${nft.tokenSubID}) x${nft.amount.toString()}`,
+      );
+    }
   }
 
   const footer = "".padEnd(70, "=");
