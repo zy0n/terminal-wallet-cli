@@ -72,6 +72,7 @@ import { getStatusText, setStatusText } from "./status-ui";
 import { runRPCEditorPrompt } from "./provider-ui";
 
 import { runMechMenu } from "./mech-ui";
+import { runTransactionHistoryViewer } from "./transaction-history-ui";
 
 const { version } = require("../../package.json");
 
@@ -452,9 +453,9 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       const privActions = visible.slice(0, 5);
       const pubActions = visible.slice(5, 10);
       const swapActions = visible.slice(10, 13);
-      const utilActions = visible.slice(13, 19);
-      const extraUtilAction = visible.slice(19, 24);
-      const exitAction = visible.slice(24);
+      const utilActions = visible.slice(13, 20);
+      const extraUtilAction = visible.slice(20, 25);
+      const exitAction = visible.slice(25);
 
       const txstuff = [...privActions, " ", ...pubActions, " ", ...swapActions];
       const utilstuff = [
@@ -595,6 +596,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         message: ` >> ${"Utilities".grey.bold} <<`,
         role: "separator",
       },
+      { name: "tx-history", message: "Transaction History" },
       { name: "wallet-tools", message: "Wallet Tools" },
       { name: "switch-wallet", message: "Switch Wallet" },
       { name: "network", message: "Switch Network" },
@@ -785,6 +787,10 @@ export const runMainMenu = async () => {
         default:
           break;
       }
+      break;
+    }
+    case "tx-history": {
+      await runTransactionHistoryViewer(networkName);
       break;
     }
     case "switch-wallet": {
