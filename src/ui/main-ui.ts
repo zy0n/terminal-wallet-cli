@@ -107,6 +107,38 @@ const buildMenuSection = (title: string, rows: string[]): string[] => {
   return [title, ...rows, ""];
 };
 
+const HOTKEY_TO_CHOICE: Record<string, string> = {
+  p: "private-transfer",
+  u: "unshield-private-balances",
+  i: "base-unshield",
+  m: "launch-mech",
+  h: "shield-public-balances",
+  g: "base-shield",
+  j: "public-transfer",
+  k: "public-base-transfer",
+  z: "private-swap",
+  y: "public-swap",
+  t: "tx-history",
+  w: "wallet-tools",
+  s: "switch-wallet",
+  n: "network",
+  a: "add-token",
+  c: "edit-contact-addresses",
+  r: "refresh-balances",
+  b: "toggle-balance",
+  q: "reset-broadcasters",
+  e: "edit-rpc",
+  o: "toggle-responsive",
+  x: "exit",
+};
+
+const CHOICE_TO_HOTKEY: Record<string, string> = Object.entries(
+  HOTKEY_TO_CHOICE,
+).reduce<Record<string, string>>((acc, [hotkey, choiceName]) => {
+  acc[choiceName] = hotkey.toUpperCase();
+  return acc;
+}, {});
+
 let lastMenuSelection: string | undefined = undefined;
 
 export const runWalletSelectionPrompt = async (): Promise<boolean> => {
@@ -475,29 +507,43 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       );
       const visible = await Promise.all(choices);
 
+      const visibleWithHotkeys = visible.map((line, index) => {
+        const choice = this.visible[index] as any;
+        if (!choice?.name || choice?.role === "separator") {
+          return line;
+        }
+
+        const hotkey = CHOICE_TO_HOTKEY[choice.name];
+        if (!isDefined(hotkey)) {
+          return line;
+        }
+
+        return `${padAnsi(line, 36)} ${`[${hotkey}]`.dim}`;
+      });
+
       const leftSections = [
         ...buildMenuSection(
           `${">>".grey} ${"Private".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
-          visible.slice(1, 5),
+          visibleWithHotkeys.slice(1, 5),
         ),
         ...buildMenuSection(
           `${">>".grey} ${"Public".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
-          visible.slice(6, 10),
+          visibleWithHotkeys.slice(6, 10),
         ),
         ...buildMenuSection(
           `${">>".grey} ${"0X".grey.bold} ${"Swap Tools".grey.bold} ${"<<".grey}`,
-          visible.slice(11, 13),
+          visibleWithHotkeys.slice(11, 13),
         ),
       ];
 
       const rightSections = [
         ...buildMenuSection(
           `${">>".grey} ${"Utilities".grey.bold} ${"<<".grey}`,
-          [...visible.slice(14, 25), "", visible[25]],
+          [...visibleWithHotkeys.slice(14, 25), "", visibleWithHotkeys[25]],
         ),
       ];
 
-      const leftWidth = 44;
+      const leftWidth = 46;
       const totalRows = Math.max(leftSections.length, rightSections.length);
       const rows: string[] = [];
 
@@ -514,7 +560,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
 
       rows.push(`${"─".repeat(leftWidth).grey}${"─".repeat(leftWidth).grey}`);
       rows.push(
-        `${"Tips".grey.bold}: ${"Arrow keys move focus. Hotkeys: T history, W tools, N network, R refresh, X exit.".dim}`,
+        `${"Tips".grey.bold}: ${"Arrow keys move focus. Press shown hotkey to run instantly.".dim}`,
       );
 
       return rows.join("\n");
@@ -545,15 +591,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       }
 
       if (!isEnterKey && typeof input === "string") {
-        const quickSelectMap: Record<string, string> = {
-          t: "tx-history",
-          w: "wallet-tools",
-          n: "network",
-          r: "refresh-balances",
-          x: "exit",
-        };
-
-        const mapped = quickSelectMap[input.toLowerCase()];
+        const mapped = HOTKEY_TO_CHOICE[input.toLowerCase()];
         if (isDefined(mapped)) {
           const targetIndex = this.choices.findIndex((choice: any) => {
             return choice.name === mapped && !choice.disabled;
@@ -574,7 +612,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
     },
     prefix: process.platform === "win32" ? " [*]" : "🛡️ ",
     message: `${"Terminal Wallet".bold} ${("v" + version).grey} ${"•".grey} ${"RAILGUN Privacy".grey}  ${
-      "[T]x [W]allet [N]etwork [R]efresh [X] Exit".dim
+      "Use visible hotkeys for instant actions".dim
     }`,
     separator: " ",
     initial: lastMenuSelection ?? "private-transfer",
