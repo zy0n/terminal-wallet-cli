@@ -85,6 +85,28 @@ const stripColors = (input: string): string => {
   return input.replace(/\x1B[[(?);]{0,2}(;?\d)*./g, "");
 };
 
+const padAnsi = (input: string, width: number): string => {
+  const visible = stripColors(input).length;
+  if (visible >= width) {
+    return input;
+  }
+  return `${input}${" ".repeat(width - visible)}`;
+};
+
+const centerAnsi = (input: string, width: number): string => {
+  const visible = stripColors(input).length;
+  if (visible >= width) {
+    return input;
+  }
+  const left = Math.floor((width - visible) / 2);
+  const right = width - visible - left;
+  return `${" ".repeat(left)}${input}${" ".repeat(right)}`;
+};
+
+const buildMenuSection = (title: string, rows: string[]): string[] => {
+  return [title, ...rows, ""];
+};
+
 let lastMenuSelection: string | undefined = undefined;
 
 export const runWalletSelectionPrompt = async (): Promise<boolean> => {
@@ -453,49 +475,54 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       );
       const visible = await Promise.all(choices);
 
-      const privActions = visible.slice(0, 5);
-      const pubActions = visible.slice(5, 10);
-      const swapActions = visible.slice(10, 13);
-      const utilActions = visible.slice(13, 20);
-      const extraUtilAction = visible.slice(20, 25);
-      const exitAction = visible.slice(25);
-
-      const txstuff = [...privActions, " ", ...pubActions, " ", ...swapActions];
-      const utilstuff = [
-        ...utilActions,
-        " ",
-        ...extraUtilAction,
-        " ",
-        ...exitAction,
+      const leftSections = [
+        ...buildMenuSection(
+          `${">>".grey} ${"Private".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
+          visible.slice(1, 5),
+        ),
+        ...buildMenuSection(
+          `${">>".grey} ${"Public".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
+          visible.slice(6, 10),
+        ),
+        ...buildMenuSection(
+          `${">>".grey} ${"0X".grey.bold} ${"Swap Tools".grey.bold} ${"<<".grey}`,
+          visible.slice(11, 13),
+        ),
       ];
 
-      const columns = txstuff.map((item) => {
-        const txItem = utilstuff.shift();
-        if (isDefined(txItem)) {
-          const itemLength = stripColors(item).length;
-          const itemBuff = item.length - itemLength;
-
-          const newLine = `${item.padEnd(35 + itemBuff, " ")}${txItem}`;
-          return newLine;
-        }
-        return item;
-      });
-
-      const cleanup = [
-        ...columns,
-        ...utilstuff.map((us) => {
-          return us.padStart(35 + us.length, " ");
-        }),
+      const rightSections = [
+        ...buildMenuSection(
+          `${">>".grey} ${"Utilities".grey.bold} ${"<<".grey}`,
+          [...visible.slice(14, 25), "", visible[25]],
+        ),
       ];
 
-      return cleanup.join("\n");
+      const leftWidth = 44;
+      const totalRows = Math.max(leftSections.length, rightSections.length);
+      const rows: string[] = [];
+
+      rows.push(
+        `${centerAnsi("Actions", leftWidth).grey.bold}${centerAnsi("Control", leftWidth).grey.bold}`,
+      );
+      rows.push(`${"─".repeat(leftWidth).grey}${"─".repeat(leftWidth).grey}`);
+
+      for (let i = 0; i < totalRows; i++) {
+        const left = leftSections[i] ?? "";
+        const right = rightSections[i] ?? "";
+        rows.push(`${padAnsi(left, leftWidth)}${right}`);
+      }
+
+      rows.push(`${"─".repeat(leftWidth).grey}${"─".repeat(leftWidth).grey}`);
+      rows.push(
+        `${"Tips".grey.bold}: ${"Arrow keys move focus. Hotkeys: T history, W tools, N network, R refresh, X exit.".dim}`,
+      );
+
+      return rows.join("\n");
     },
     async keypress(input: any, key = input ?? {}) {
       const now = Date.now();
-      const elapsed = now - this.lastKeypress;
       this.lastKeypress = now;
       const isEnterKey = key.name === "return" || key.name === "enter";
-      const isESCKey = key.name === "escape";
       this.state.prevKeypress = key;
 
       const isLeft = key.name == "left";
@@ -517,14 +544,37 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         this.down();
       }
 
+      if (!isEnterKey && typeof input === "string") {
+        const quickSelectMap: Record<string, string> = {
+          t: "tx-history",
+          w: "wallet-tools",
+          n: "network",
+          r: "refresh-balances",
+          x: "exit",
+        };
+
+        const mapped = quickSelectMap[input.toLowerCase()];
+        if (isDefined(mapped)) {
+          const targetIndex = this.choices.findIndex((choice: any) => {
+            return choice.name === mapped && !choice.disabled;
+          });
+
+          if (targetIndex >= 0) {
+            this.index = targetIndex;
+            this.submit();
+            return this.render();
+          }
+        }
+      }
+
       if (isEnterKey) {
         this.submit();
       }
       return this.render();
     },
     prefix: process.platform === "win32" ? " [*]" : "🛡️ ",
-    message: `Now arriving at Terminal Wallet ${("v" + version).grey}... ${
-      "(Featuring RAILGUN Privacy)".grey
+    message: `${"Terminal Wallet".bold} ${("v" + version).grey} ${"•".grey} ${"RAILGUN Privacy".grey}  ${
+      "[T]x [W]allet [N]etwork [R]efresh [X] Exit".dim
     }`,
     separator: " ",
     initial: lastMenuSelection ?? "private-transfer",
