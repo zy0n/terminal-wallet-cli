@@ -36,7 +36,10 @@ import {
   processDestroyExit,
   processSafeExit,
 } from "../util/error-util";
-import { runAddTokenPrompt } from "./token-ui";
+import {
+  runAddTokenPrompt,
+  transferTokenAmountSelectionPrompt,
+} from "./token-ui";
 import {
   confirmPrompt,
   confirmPromptCatch,
@@ -67,15 +70,74 @@ import { getScanProgressString, walletManager } from "../wallet/wallet-manager";
 import "colors";
 import { getStatusText, setStatusText } from "./status-ui";
 import { runRPCEditorPrompt } from "./provider-ui";
+import { getMainUILogComponent } from "./log-ui";
+
+import { runMechMenu } from "./mech-ui";
+import { runTransactionHistoryViewer } from "./transaction-history-ui";
+
 const { version } = require("../../package.json");
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { Select } = require("enquirer");
+const { Select, Confirm } = require("enquirer");
 
 const stripColors = (input: string): string => {
   // eslint-disable-next-line no-control-regex
   return input.replace(/\x1B[[(?);]{0,2}(;?\d)*./g, "");
 };
+
+const padAnsi = (input: string, width: number): string => {
+  const visible = stripColors(input).length;
+  if (visible >= width) {
+    return input;
+  }
+  return `${input}${" ".repeat(width - visible)}`;
+};
+
+const centerAnsi = (input: string, width: number): string => {
+  const visible = stripColors(input).length;
+  if (visible >= width) {
+    return input;
+  }
+  const left = Math.floor((width - visible) / 2);
+  const right = width - visible - left;
+  return `${" ".repeat(left)}${input}${" ".repeat(right)}`;
+};
+
+const buildMenuSection = (title: string, rows: string[]): string[] => {
+  return [title, ...rows, ""];
+};
+
+const HOTKEY_TO_CHOICE: Record<string, string> = {
+  p: "private-transfer",
+  u: "unshield-private-balances",
+  i: "base-unshield",
+  m: "launch-mech",
+  h: "shield-public-balances",
+  g: "base-shield",
+  j: "public-transfer",
+  k: "public-base-transfer",
+  z: "private-swap",
+  y: "public-swap",
+  t: "tx-history",
+  w: "wallet-tools",
+  s: "switch-wallet",
+  n: "network",
+  a: "add-token",
+  c: "edit-contact-addresses",
+  r: "refresh-balances",
+  b: "toggle-balance",
+  q: "reset-broadcasters",
+  e: "edit-rpc",
+  o: "toggle-responsive",
+  x: "exit",
+};
+
+const CHOICE_TO_HOTKEY: Record<string, string> = Object.entries(
+  HOTKEY_TO_CHOICE,
+).reduce<Record<string, string>>((acc, [hotkey, choiceName]) => {
+  acc[choiceName] = hotkey.toUpperCase();
+  return acc;
+}, {});
 
 let lastMenuSelection: string | undefined = undefined;
 
@@ -128,6 +190,10 @@ const runNetworkSelectionPrompt = async () => {
       { name: NetworkName.BNBChain, message: `${"Binance".green} Network` },
       { name: NetworkName.Polygon, message: `${"Polygon".green} Network` },
       { name: NetworkName.Arbitrum, message: `${"Arbitrum".green} Network` },
+      {
+        name: NetworkName.EthereumSepolia,
+        message: `${"Sepolia".green} Network`,
+      },
       // {
       //   name: NetworkName.EthereumGoerli_DEPRECATED,
       //   message: `${"Ethereum Görli".green} Testnet`,
@@ -204,19 +270,26 @@ const runPOIToolsPrompt = async (chainName: NetworkName) => {
 };
 
 const runWalletToolsPrompt = async (chainName: NetworkName) => {
-  const currentShowStatus = `[${shouldShowSender() ? "SHOWING".green : "HIDING".grey}]`
+  const currentShowStatus = `[${
+    shouldShowSender() ? "SHOWING".green : "HIDING".grey
+  }]`;
   const generateOptionPrompt = new Select({
     header: " ",
     message: "Wallet Tools",
     choices: [
       { name: "add-wallet", message: "Add Wallet" },
       { name: "poi-tools", message: "POI Tools" },
-      { name: "show-sender-address", message: `${currentShowStatus} ${shouldShowSender() ? "Hide" : "Show"} Private TX Sender address.` },
+      {
+        name: "show-sender-address",
+        message: `${currentShowStatus} ${
+          shouldShowSender() ? "Hide" : "Show"
+        } Private TX Sender address.`,
+      },
       {
         name: "show-mnemonic",
         message: "Show Current Mnemonic & Index",
       },
-      { name: 'full-txid-rescan', message: "Full TXID Rescan" },
+      { name: "full-txid-rescan", message: "Full TXID Rescan" },
       { name: "full-balance-rescan", message: "Full Balance Rescan" },
       {
         name: "destruct-wallet",
@@ -258,7 +331,7 @@ const runWalletToolsPrompt = async (chainName: NetworkName) => {
         break;
       }
       case "full-txid-rescan": {
-        fullResetTXIDMerkletreesV2(chainName)
+        fullResetTXIDMerkletreesV2(chainName);
         break;
       }
       case "full-balance-rescan": {
@@ -301,16 +374,16 @@ const runWalletToolsPrompt = async (chainName: NetworkName) => {
 };
 
 const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
-
   const chain = getChainForName(networkName);
 
   return new Select({
     logoHeader: RAILGUN_HEADER,
     header: async () => {
-      const broadcasterStatus = `Broadcasters: ${isWakuConnected()
-        ? "Available".dim.green.bold
-        : "Disconnected".dim.yellow.bold
-        }`.grey;
+      const broadcasterStatus = `Broadcasters: ${
+        isWakuConnected()
+          ? "Available".dim.green.bold
+          : "Disconnected".dim.yellow.bold
+      }`.grey;
 
       const walletName = getCurrentWalletName();
       const currentRailgunAddress = getCurrentRailgunAddress();
@@ -324,21 +397,23 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       `;
 
       const statusString = getStatusText();
+      const logComponent = getMainUILogComponent();
       const scanString = getScanProgressString();
       const balanceScanned =
         scanString === "" ? statusString : `${scanString}${statusString}`;
       const buckets = Object.keys(RailgunWalletBalanceBucket);
 
-      let balanceBlock = ""
+      let balanceBlock = "";
       for (const bucket of buckets) {
-        const output = await getPrivateDisplayBalances(networkName, bucket as RailgunWalletBalanceBucket).then(
-          (v) => {
-            return v;
-          },
-        );
+        const output = await getPrivateDisplayBalances(
+          networkName,
+          bucket as RailgunWalletBalanceBucket,
+        ).then((v) => {
+          return v;
+        });
 
         const outputstring = `${output}`;
-        balanceBlock += `${outputstring}`
+        balanceBlock += `${outputstring}`;
       }
 
       return [
@@ -346,9 +421,11 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         walletInfoString,
         broadcasterStatus,
         balanceBlock,
-        `${!isMenuResponsive()
-          ? "Auto Refresh Disabled, Refresh on Movement Enabled.\n".yellow.dim
-          : ""
+        logComponent,
+        `${
+          !isMenuResponsive()
+            ? "Auto Refresh Disabled, Refresh on Movement Enabled.\n".yellow.dim
+            : ""
         }${balanceScanned}`,
       ].join("\n");
     },
@@ -430,49 +507,68 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       );
       const visible = await Promise.all(choices);
 
-      const privActions = visible.slice(0, 4);
-      const pubActions = visible.slice(4, 9);
-      const swapActions = visible.slice(9, 12);
-      const utilActions = visible.slice(12, 18);
-      const extraUtilAction = visible.slice(18, 23);
-      const exitAction = visible.slice(23);
-
-      const txstuff = [...privActions, " ", ...pubActions, " ", ...swapActions];
-      const utilstuff = [
-        ...utilActions,
-        " ",
-        ...extraUtilAction,
-        " ",
-        ...exitAction,
-      ];
-
-      const columns = txstuff.map((item) => {
-        const txItem = utilstuff.shift();
-        if (isDefined(txItem)) {
-          const itemLength = stripColors(item).length;
-          const itemBuff = item.length - itemLength;
-
-          const newLine = `${item.padEnd(35 + itemBuff, " ")}${txItem}`;
-          return newLine;
+      const visibleWithHotkeys = visible.map((line, index) => {
+        const choice = this.visible[index] as any;
+        if (!choice?.name || choice?.role === "separator") {
+          return line;
         }
-        return item;
+
+        const hotkey = CHOICE_TO_HOTKEY[choice.name];
+        if (!isDefined(hotkey)) {
+          return line;
+        }
+
+        return `${padAnsi(line, 36)} ${`[${hotkey}]`.dim}`;
       });
 
-      const cleanup = [
-        ...columns,
-        ...utilstuff.map((us) => {
-          return us.padStart(35 + us.length, " ");
-        }),
+      const leftSections = [
+        ...buildMenuSection(
+          `${">>".grey} ${"Private".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
+          visibleWithHotkeys.slice(1, 5),
+        ),
+        ...buildMenuSection(
+          `${">>".grey} ${"Public".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
+          visibleWithHotkeys.slice(6, 10),
+        ),
+        ...buildMenuSection(
+          `${">>".grey} ${"0X".grey.bold} ${"Swap Tools".grey.bold} ${"<<".grey}`,
+          visibleWithHotkeys.slice(11, 13),
+        ),
       ];
 
-      return cleanup.join("\n");
+      const rightSections = [
+        ...buildMenuSection(
+          `${">>".grey} ${"Utilities".grey.bold} ${"<<".grey}`,
+          [...visibleWithHotkeys.slice(14, 25), "", visibleWithHotkeys[25]],
+        ),
+      ];
+
+      const leftWidth = 46;
+      const totalRows = Math.max(leftSections.length, rightSections.length);
+      const rows: string[] = [];
+
+      rows.push(
+        `${centerAnsi("Actions", leftWidth).grey.bold}${centerAnsi("Control", leftWidth).grey.bold}`,
+      );
+      rows.push(`${"─".repeat(leftWidth).grey}${"─".repeat(leftWidth).grey}`);
+
+      for (let i = 0; i < totalRows; i++) {
+        const left = leftSections[i] ?? "";
+        const right = rightSections[i] ?? "";
+        rows.push(`${padAnsi(left, leftWidth)}${right}`);
+      }
+
+      rows.push(`${"─".repeat(leftWidth).grey}${"─".repeat(leftWidth).grey}`);
+      rows.push(
+        `${"Tips".grey.bold}: ${"Arrow keys move focus. Press shown hotkey to run instantly.".dim}`,
+      );
+
+      return rows.join("\n");
     },
     async keypress(input: any, key = input ?? {}) {
       const now = Date.now();
-      const elapsed = now - this.lastKeypress;
       this.lastKeypress = now;
       const isEnterKey = key.name === "return" || key.name === "enter";
-      const isESCKey = key.name === "escape";
       this.state.prevKeypress = key;
 
       const isLeft = key.name == "left";
@@ -494,14 +590,30 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         this.down();
       }
 
+      if (!isEnterKey && typeof input === "string") {
+        const mapped = HOTKEY_TO_CHOICE[input.toLowerCase()];
+        if (isDefined(mapped)) {
+          const targetIndex = this.choices.findIndex((choice: any) => {
+            return choice.name === mapped && !choice.disabled;
+          });
+
+          if (targetIndex >= 0) {
+            this.index = targetIndex;
+            this.submit();
+            return this.render();
+          }
+        }
+      }
+
       if (isEnterKey) {
         this.submit();
       }
       return this.render();
     },
     prefix: process.platform === "win32" ? " [*]" : "🛡️ ",
-    message: `Now arriving at Terminal Wallet ${("v" + version).grey}... ${"(Featuring RAILGUN Privacy)".grey
-      }`,
+    message: `${"Terminal Wallet".bold} ${("v" + version).grey} ${"•".grey} ${"RAILGUN Privacy".grey}  ${
+      "Use visible hotkeys for instant actions".dim
+    }`,
     separator: " ",
     initial: lastMenuSelection ?? "private-transfer",
     choices: [
@@ -513,19 +625,26 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       {
         name: "private-transfer",
         message: `Send ${"ERC20s".cyan.bold} Privately`,
-        disabled: !remoteConfig.network[chain.id].flags?.canSendShielded
+        disabled: !remoteConfig.network[chain.id].flags?.canSendShielded,
       },
       {
         name: "unshield-private-balances",
         message: `Unshield ${"ERC20s".cyan.bold}`,
-        disabled: !remoteConfig.network[chain.id].flags?.canUnshield
+        disabled: !remoteConfig.network[chain.id].flags?.canUnshield,
       },
-
       {
         name: "base-unshield",
         message: `Unshield [${baseSymbol.cyan.bold}]`,
-        disabled: !remoteConfig.network[chain.id].flags?.canUnshield && !remoteConfig.network[chain.id].flags?.canRelayAdapt
+        disabled:
+          !remoteConfig.network[chain.id].flags?.canUnshield &&
+          !remoteConfig.network[chain.id].flags?.canRelayAdapt,
       },
+      {
+        name: "launch-mech",
+        message: "Operate Mech 🦾",
+        disabled: false,
+      },
+
       {
         message: ` >> ${"Public Actions".grey.bold} <<`,
         role: "separator",
@@ -533,22 +652,22 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       {
         name: "shield-public-balances",
         message: `Shield ${"ERC20s".cyan.bold}`,
-        disabled: !remoteConfig.network[chain.id].flags?.canShield
+        disabled: !remoteConfig.network[chain.id].flags?.canShield,
       },
       {
         name: "base-shield",
         message: `Shield [${baseSymbol.cyan.bold}]`,
-        disabled: !remoteConfig.network[chain.id].flags?.canShield
+        disabled: !remoteConfig.network[chain.id].flags?.canShield,
       },
       {
         name: "public-transfer",
         message: `Send ${"ERC20s".cyan.bold} Publicly`,
-        disabled: !remoteConfig.network[chain.id].flags?.canSendPublic
+        disabled: !remoteConfig.network[chain.id].flags?.canSendPublic,
       },
       {
         name: "public-base-transfer",
         message: `Send [${baseSymbol.cyan.bold}]`,
-        disabled: !remoteConfig.network[chain.id].flags?.canSendPublic
+        disabled: !remoteConfig.network[chain.id].flags?.canSendPublic,
       },
       {
         message: ` >> ${"0X SWAP Tools".grey.bold} <<`,
@@ -557,17 +676,18 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       {
         name: "private-swap",
         message: `${"Privately"} ${"SWAP"} ${"ERC20".cyan.bold} ${"Tokens"}`,
-        disabled: !remoteConfig.network[chain.id].flags?.canSwapShielded
+        disabled: !remoteConfig.network[chain.id].flags?.canSwapShielded,
       },
       {
         name: "public-swap",
         message: `${"Publicly"} ${"SWAP"} ${"ERC20".cyan.bold} ${"Tokens"}`,
-        disabled: !remoteConfig.network[chain.id].flags?.canSwapPublic
+        disabled: !remoteConfig.network[chain.id].flags?.canSwapPublic,
       },
       {
         message: ` >> ${"Utilities".grey.bold} <<`,
         role: "separator",
       },
+      { name: "tx-history", message: "Transaction History" },
       { name: "wallet-tools", message: "Wallet Tools" },
       { name: "switch-wallet", message: "Switch Wallet" },
       { name: "network", message: "Switch Network" },
@@ -579,8 +699,9 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       { name: "refresh-balances", message: "Refresh Balances" },
       {
         name: "toggle-balance",
-        message: `Toggle ${shouldDisplayPrivateBalances() ? "Public" : "Private"
-          } Balances`.yellow.dim,
+        message: `Toggle ${
+          shouldDisplayPrivateBalances() ? "Public" : "Private"
+        } Balances`.yellow.dim,
       },
       { name: "reset-broadcasters", message: "Reset Broadcaster Connection" },
       { name: "edit-rpc", message: "Edit RPC Providers" },
@@ -759,6 +880,10 @@ export const runMainMenu = async () => {
       }
       break;
     }
+    case "tx-history": {
+      await runTransactionHistoryViewer(networkName);
+      break;
+    }
     case "switch-wallet": {
       await runWalletSelectionPrompt();
       break;
@@ -813,6 +938,10 @@ export const runMainMenu = async () => {
       toggleResponsiveMenu();
       break;
     }
+    case "launch-mech": {
+      await runMechMenu(networkName);
+      break;
+    }
 
     case "exit": {
       clearConsoleBuffer();
@@ -823,6 +952,7 @@ export const runMainMenu = async () => {
       break;
     }
   }
+
   clearConsoleBuffer();
   runMainMenu();
 };

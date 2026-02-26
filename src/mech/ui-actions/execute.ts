@@ -1,0 +1,190 @@
+import { toBeHex, zeroPadValue } from "ethers";
+import {
+  isDefined,
+  RailgunERC20Amount,
+  RailgunNFTAmount,
+} from "@railgun-community/shared-models";
+import { loadProvider, NFTTokenType } from "@railgun-community/wallet";
+
+import {
+  getCurrentRailgunAddress,
+  getCurrentRailgunID,
+} from "../../wallet/wallet-util";
+
+import { sendBroadcastedTransaction, sendSelfSignedTransaction } from "../../transaction/transaction-builder";
+import { currentNetworkFees, getCurrentNetwork } from "../../engine/engine";
+
+import { encodeMechExecute, encodeTranfer, encodeTranferFrom } from "../encode";
+import { findAvailableMech } from "../status";
+import { MetaTransaction } from "../http";
+import { populateCrossTransaction } from "../railgun-primitives";
+
+import deployments, { mechDeploymentTx } from "../deployments";
+import { generateHookedCall, pickBestBroadcaster, type HookedCrossContractInputs } from "./cross-contract";
+import { RailgunTransaction } from "../../models/transaction-models";
+
+export async function executeViaMech({
+  unshieldNFTs = [],
+  unshieldERC20s = [],
+  calls = [],
+  shieldNFTs = [],
+  shieldERC20s = [],
+}: {
+  unshieldNFTs?: RailgunNFTAmount[];
+  unshieldERC20s?: RailgunERC20Amount[];
+  calls?: MetaTransaction[];
+  shieldNFTs?: RailgunNFTAmount[];
+  shieldERC20s?: RailgunERC20Amount[];
+}) {
+  const entry = await findAvailableMech();
+  if (!entry) {
+    console.log("No NFT/Mech is Ready for execution");
+    return;
+  }
+
+  const { address: relayAdaptAddress } = deployments.relayAdapt();
+  const { mechAddress, tokenAddress, tokenId, isMechDeployed } = entry;
+
+  const viaMech = (t: { to: string; data: string }) => ({
+    to: mechAddress,
+    data: encodeMechExecute(t),
+  });
+  const toOur0zk = <T>(t: T): T & { recipientAddress: string } => ({
+    ...t,
+    recipientAddress: getCurrentRailgunAddress(),
+  });
+
+  const myNFTOut = {
+    nftAddress: tokenAddress,
+    nftTokenType: NFTTokenType.ERC721,
+    tokenSubID: zeroPadValue(toBeHex(tokenId), 32),
+    amount: BigInt(1),
+  };
+
+  const myNFTIn = {
+    ...myNFTOut,
+    recipientAddress: getCurrentRailgunAddress(),
+  };
+
+  /*
+   * For deposits we make them available in relay adapt, then move them to mech
+   * For withdrawals, we move then first into relay adapt, and then shield
+   * both require additional transactions that will be included in calls
+   */
+
+  const deployment = isMechDeployed ? [] : [mechDeploymentTx(tokenId)];
+  const deposit = [
+    ...unshieldNFTs.map((e) => ({
+      to: e.nftAddress,
+      data: encodeTranferFrom(
+        relayAdaptAddress,
+        mechAddress,
+        BigInt(e.tokenSubID),
+      ),
+    })),
+    ...unshieldERC20s.map((e) => ({
+      to: e.tokenAddress,
+      /*
+       * We have to discount the fee, since we are making available
+       * in RelayAdapt, but is minus the ProtocolFees
+       * would be good to query the feeBP form the contract.
+       * For now we hardcode to current value of 25 basis points
+       *
+       */
+      data: encodeTranfer(mechAddress, minusUnshieldFee(e.amount)),
+    })),
+  ];
+
+  const execution = calls.map(viaMech);
+  const withdrawal = [
+    ...shieldNFTs.map((e) => ({
+      to: e.nftAddress,
+      data: encodeTranferFrom(
+        mechAddress,
+        relayAdaptAddress,
+        BigInt(e.tokenSubID),
+      ),
+    })),
+    ...shieldERC20s.map((e) => ({
+      to: e.tokenAddress,
+      data: encodeTranfer(relayAdaptAddress, e.amount),
+    })),
+  ].map(viaMech);
+
+  const selected = await pickBestBroadcaster()
+  const { broadcasterSelection, selfSignerInfo } = selected;
+
+  const crossContractCalls = [
+    ...deployment,
+    ...deposit,
+    ...execution,
+    ...withdrawal,
+  ];
+  const crossContractInputs: HookedCrossContractInputs = {
+    relayAdaptUnshieldERC20Amounts: unshieldERC20s,
+    relayAdaptShieldERC20Addresses: shieldERC20s.map(toOur0zk),
+    relayAdaptUnshieldNFTAmounts: [myNFTOut, ...unshieldNFTs],
+    relayAdaptShieldNFTAddresses: [
+      ...shieldNFTs.map(toOur0zk),
+      myNFTIn
+    ],
+  }
+
+  const hookedProved = await generateHookedCall(
+    getCurrentNetwork(),
+    crossContractCalls,
+    crossContractInputs,
+    selected
+  );
+
+  if(!isDefined(hookedProved)){
+    throw new Error("No transaction to process.")
+  }
+
+
+  console.log("Waiting for Mint transaction...");
+
+  try {
+    let result;
+    if (broadcasterSelection) {
+      result = await sendBroadcastedTransaction(
+        RailgunTransaction.UnshieldBase,
+        hookedProved,
+        broadcasterSelection,
+        getCurrentNetwork(),
+      );
+    } else if (selfSignerInfo) {
+      result = await sendSelfSignedTransaction(
+        selfSignerInfo,
+        getCurrentNetwork(),
+        hookedProved,
+      );
+    } else {
+      throw new Error("No broadcaster or self-signer selected.");
+    }
+    console.log("RESULT", result)
+
+    // console.log("Waiting for execution...");
+    // await result?.wait();
+  } catch (error) {
+    console.error(error);
+    process.exit(1);
+  }
+}
+
+function minusUnshieldFee(amount: bigint) {
+  const FEE_BP = BigInt(currentNetworkFees?.unshieldFeeV2 ?? 25)
+  const BASIS_POINTS = 10000n;
+
+  const base = amount - (amount * FEE_BP) / BASIS_POINTS;
+  // const fee = amount - base;
+  return base;
+}
+
+function selfSignerInfo() {
+  return {
+    railgunWalletID: getCurrentRailgunID(),
+    railgunWalletAddress: getCurrentRailgunAddress(),
+    derivationIndex: 0,
+  };
+}
