@@ -139,6 +139,52 @@ export const ratchetEphemeralWalletOnSuccess = async (
   return true;
 };
 
+export const manualRatchetEphemeralWallet = async (encryptionKey: string) => {
+  const synced = await syncCurrentEphemeralWallet(encryptionKey);
+  if (!isDefined(synced)) {
+    return undefined;
+  }
+
+  await ratchetEphemeralAddress(synced.walletID);
+  const nextAddress = await getCurrentEphemeralAddress(
+    synced.walletID,
+    encryptionKey,
+  );
+
+  const cache = getOrCreateWalletCache(synced.walletID);
+  const nextIndex = synced.currentIndex + 1;
+  cache.currentIndex = nextIndex;
+  cache.addressByIndex[nextIndex] = nextAddress;
+  cache.lastKnownAddress = nextAddress;
+  cache.lastUpdated = Date.now();
+  persistKeychain();
+
+  return {
+    walletID: synced.walletID,
+    currentIndex: nextIndex,
+    currentAddress: nextAddress,
+  };
+};
+
+export const getCurrentKnownEphemeralState = (walletID = getCurrentRailgunID()) => {
+  if (!isDefined(walletID)) {
+    return undefined;
+  }
+
+  const cache = getEphemeralWalletMap()[walletID];
+  if (!isDefined(cache)) {
+    return undefined;
+  }
+
+  return {
+    walletID,
+    currentIndex: cache.currentIndex,
+    currentAddress: cache.lastKnownAddress,
+    knownCount: Object.keys(cache.addressByIndex).length,
+    lastUpdated: cache.lastUpdated,
+  };
+};
+
 export const getKnownEphemeralAddresses = (walletID = getCurrentRailgunID()) => {
   if (!isDefined(walletID)) {
     return [];

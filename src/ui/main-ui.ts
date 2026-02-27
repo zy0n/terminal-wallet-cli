@@ -74,6 +74,7 @@ import { getMainUILogComponent } from "./log-ui";
 
 import { runMechMenu } from "./mech-ui";
 import { runTransactionHistoryViewer } from "./transaction-history-ui";
+import { runEphemeralManagerPrompt } from "./ephemeral-ui";
 
 const { version } = require("../../package.json");
 
@@ -279,6 +280,7 @@ const runWalletToolsPrompt = async (chainName: NetworkName) => {
     choices: [
       { name: "add-wallet", message: "Add Wallet" },
       { name: "poi-tools", message: "POI Tools" },
+      { name: "ephemeral-wallet-tools", message: "Ephemeral Wallet Tools" },
       {
         name: "show-sender-address",
         message: `${currentShowStatus} ${
@@ -320,6 +322,10 @@ const runWalletToolsPrompt = async (chainName: NetworkName) => {
       }
       case "poi-tools": {
         await runPOIToolsPrompt(chainName);
+        break;
+      }
+      case "ephemeral-wallet-tools": {
+        await runEphemeralManagerPrompt();
         break;
       }
       case "show-mnemonic": {

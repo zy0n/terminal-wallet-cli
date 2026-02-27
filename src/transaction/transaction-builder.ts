@@ -685,7 +685,11 @@ export const runTransactionBuilder = async (
                       const txResult = await ethersWallet.sendTransaction(
                         populatedTransaction,
                       );
-                      await bgWatchSelfSignedTx(chainName, txResult);
+                      await bgWatchSelfSignedTx(
+                        chainName,
+                        txResult,
+                        RailgunTransaction.PublicTransfer,
+                      );
                       approvalsLeft -= 1;
                     }
                   }
@@ -824,7 +828,11 @@ export const runTransactionBuilder = async (
                         const txResult = await ethersWallet.sendTransaction(
                           populatedTransaction,
                         );
-                        await bgWatchSelfSignedTx(chainName, txResult);
+                        await bgWatchSelfSignedTx(
+                          chainName,
+                          txResult,
+                          RailgunTransaction.PublicTransfer,
+                        );
                         approvalsLeft -= 1;
                       }
                     }
@@ -962,7 +970,11 @@ export const runTransactionBuilder = async (
                       const txResult = await ethersWallet.sendTransaction(
                         populatedTransaction,
                       );
-                      await bgWatchSelfSignedTx(chainName, txResult);
+                      await bgWatchSelfSignedTx(
+                        chainName,
+                        txResult,
+                        RailgunTransaction.PublicTransfer,
+                      );
                       approvalsLeft -= 1;
                     }
                   }
@@ -1101,7 +1113,11 @@ export const runTransactionBuilder = async (
                         const txResult = await ethersWallet.sendTransaction(
                           populatedTransaction,
                         );
-                        await bgWatchSelfSignedTx(chainName, txResult);
+                        await bgWatchSelfSignedTx(
+                          chainName,
+                          txResult,
+                          RailgunTransaction.PublicTransfer,
+                        );
                         approvalsLeft -= 1;
                       }
                     }
