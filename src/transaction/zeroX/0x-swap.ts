@@ -10,6 +10,7 @@ import {
   SwapQuoteParamsV2
 } from "@railgun-community/cookbook";
 import {
+  EVMGasType,
   NetworkName,
   RailgunERC20Recipient,
   RailgunPopulateTransactionResponse,
@@ -20,7 +21,9 @@ import {
 import configDefaults from "../../config/config-defaults";
 import {
   gasEstimateForUnprovenCrossContractCalls,
+  gasEstimateForUnprovenCrossContractCalls7702,
   generateCrossContractCallsProof,
+  generateCrossContractCallsProof7702,
   populateProvedCrossContractCalls,
 } from "@railgun-community/wallet";
 import {
@@ -222,7 +225,7 @@ export const getZer0XSwapTransactionGasEstimate = async (
     minGasLimit,
   } = zer0XSwapInputs;
 
-  const { gasEstimate } = await gasEstimateForUnprovenCrossContractCalls(
+  const { gasEstimate } = await gasEstimateForUnprovenCrossContractCalls7702(
     txIDVersion,
     chainName,
     railgunWalletID,
@@ -283,7 +286,7 @@ export const getProvedZer0XSwapTransaction = async (
   const sendWithPublicWallet =
     typeof broadcasterFeeERC20Recipient !== "undefined" ? false : true;
   try {
-    await generateCrossContractCallsProof(
+    await generateCrossContractCallsProof7702(
       txIDVersion,
       chainName,
       railgunWalletID,
@@ -322,6 +325,7 @@ export const getProvedZer0XSwapTransaction = async (
         estimatedGasDetails,
       );
 
+      transaction.type = EVMGasType.Type4;
     return { transaction, nullifiers, preTransactionPOIsPerTxidLeafPerList };
   } catch (err) {
     const error = err as Error;
