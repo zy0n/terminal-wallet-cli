@@ -75,6 +75,7 @@ import { getMainUILogComponent } from "./log-ui";
 import { runMechMenu } from "./mech-ui";
 import { runTransactionHistoryViewer } from "./transaction-history-ui";
 import { runEphemeralManagerPrompt } from "./ephemeral-ui";
+import { getCurrentKnownEphemeralState } from "../wallet/ephemeral-wallet-manager";
 
 const { version } = require("../../package.json");
 
@@ -102,6 +103,13 @@ const centerAnsi = (input: string, width: number): string => {
   const left = Math.floor((width - visible) / 2);
   const right = width - visible - left;
   return `${" ".repeat(left)}${input}${" ".repeat(right)}`;
+};
+
+const shortAddress = (address?: string) => {
+  if (!isDefined(address) || address.length < 12) {
+    return "N/A";
+  }
+  return `${address.slice(0, 8)}...${address.slice(-6)}`;
 };
 
 const buildMenuSection = (title: string, rows: string[]): string[] => {
@@ -394,13 +402,21 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       const walletName = getCurrentWalletName();
       const currentRailgunAddress = getCurrentRailgunAddress();
       const currentPublicAddress = getCurrentWalletPublicAddress();
+      const ephemeralState = getCurrentKnownEphemeralState();
+      const ephemeralAddress = shortAddress(ephemeralState?.currentAddress);
+      const ephemeralMeta = isDefined(ephemeralState)
+        ? `#${ephemeralState.currentIndex} · ${ephemeralState.knownCount} known`
+        : "not synced";
 
       const { rows } = process.stdout;
 
-      const walletInfoString = `${"Wallet".grey}: ${walletName}
-[Private] ${currentRailgunAddress.grey}
-[Public ] ${currentPublicAddress.grey}
-      `;
+      const walletInfoString = [
+        `${"┌─ Wallet".grey} ${walletName.cyan.bold}`,
+        `${"│".grey} Private   ${shortAddress(currentRailgunAddress).grey}`,
+        `${"│".grey} Public    ${shortAddress(currentPublicAddress).grey}`,
+        `${"│".grey} Ephemeral ${ephemeralAddress.grey} ${`(${ephemeralMeta})`.dim}`,
+        `${"└─".grey}`,
+      ].join("\n");
 
       const statusString = getStatusText();
       const logComponent = getMainUILogComponent();
@@ -554,7 +570,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       const rows: string[] = [];
 
       rows.push(
-        `${centerAnsi("Actions", leftWidth).grey.bold}${centerAnsi("Control", leftWidth).grey.bold}`,
+        `${centerAnsi("Action Console", leftWidth).grey.bold}${centerAnsi("Control Center", leftWidth).grey.bold}`,
       );
       rows.push(`${"─".repeat(leftWidth).grey}${"─".repeat(leftWidth).grey}`);
 
@@ -566,7 +582,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
 
       rows.push(`${"─".repeat(leftWidth).grey}${"─".repeat(leftWidth).grey}`);
       rows.push(
-        `${"Tips".grey.bold}: ${"Arrow keys move focus. Press shown hotkey to run instantly.".dim}`,
+        `${"Tips".grey.bold}: ${"Arrow keys move focus • Hotkeys run instantly • Enter confirms".dim}`,
       );
 
       return rows.join("\n");

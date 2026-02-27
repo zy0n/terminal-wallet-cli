@@ -105,7 +105,10 @@ import { setStatusText } from "../ui/status-ui";
 import { getWrappedTokenBalance } from "../balance/balance-util";
 import { clearConsoleBuffer } from "../util/error-util";
 import { getMemoTextPrompt } from "../ui/memo-ui";
-import { ratchetEphemeralWalletOnSuccess } from "../wallet/ephemeral-wallet-manager";
+import {
+  getCurrentKnownEphemeralState,
+  ratchetEphemeralWalletOnSuccess,
+} from "../wallet/ephemeral-wallet-manager";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Select, Input } = require("enquirer");
 
@@ -181,13 +184,29 @@ const getDisplayTransactions = async (
   privateGasEstimate?: PrivateGasEstimate,
 ) => {
   const chainName = getCurrentNetwork();
+  const cardWidth = 78;
+  const cardInnerWidth = cardWidth - 4;
+  const stripAnsi = (input: string): string => {
+    // eslint-disable-next-line no-control-regex
+    return input.replace(/\x1B\[[0-9;]*m/g, "");
+  };
+  const pushCardLine = (display: string[], line = "") => {
+    const visibleLength = stripAnsi(line).length;
+    const padding = Math.max(0, cardInnerWidth - visibleLength);
+    display.push(`${"│".grey} ${line}${" ".repeat(padding)} ${"│".grey}`);
+  };
+  const topBorder = `┌${"─".repeat(cardWidth - 2)}┐`.grey;
+  const bottomBorder = `└${"─".repeat(cardWidth - 2)}┘`.grey;
+  const sectionDivider = `├${"─".repeat(cardWidth - 2)}┤`.grey;
 
-  const display = [];
+  const display: string[] = [];
   if (!erc20Amounts) {
     return "";
   }
 
-  display.push("=============== TRANSACTION REVIEW ===============".grey);
+  display.push(topBorder);
+  pushCardLine(display, "TRANSACTION REVIEW");
+  display.push(sectionDivider);
 
   if (isDefined((erc20Amounts as Zer0XSwapSelectionInfo).selections)) {
     const { selections, zer0XInputs } = erc20Amounts as Zer0XSwapSelectionInfo;
@@ -217,46 +236,60 @@ const getDisplayTransactions = async (
       : getCurrentRailgunAddress();
     const fRailgunAddress = getFormattedAddress(railgunAddress);
     const walletName = getCurrentWalletName();
-    const sellHeader = `[${walletName.cyan}] - ${fRailgunAddress.green} ${swapType} Swap`;
+    const sellHeader = `Wallet: ${walletName.cyan}  ·  Route: ${swapType.yellow}  ·  Sender: ${fRailgunAddress.green}`;
+    const ephemeralState = getCurrentKnownEphemeralState();
 
     const padLength =
       sellTokenSymbol.length > buyTokenSymbol.length
         ? sellTokenSymbol.length
         : buyTokenSymbol.length;
 
-    const sellInfo = `Selling [${
-      sellTokenSymbol.padStart(padLength, " ").cyan
-    }] ${sellAmount.yellow}`;
+    const sellInfo = `Sell [${sellTokenSymbol.padStart(padLength, " ").cyan}] ${sellAmount.yellow}`;
     const buyInfo =
-      `Buying  [${buyTokenSymbol.padStart(padLength, " ").cyan}] ${
+      `Buy  [${buyTokenSymbol.padStart(padLength, " ").cyan}] ${
         buyAmount.yellow
-      }\nMin. Recieved: ${buyMinimum.cyan} [${buyTokenSymbol}] ` +
+      }\nMin. Received: ${buyMinimum.cyan} [${buyTokenSymbol}] ` +
       `(1 [${sellTokenSymbol}] = ${price} [${buyTokenSymbol}])`.grey;
-    const feeInfo = `(${sellFee.grey}) [${sellTokenSymbol.grey}] Unshield Fee\n(${buyFee.grey}) [${buyTokenSymbol.grey}] Shield Fee`;
-    display.push(sellHeader);
-    display.push(sellInfo);
-    display.push(buyInfo);
+    const feeInfo = `Unshield Fee: (${sellFee.grey}) [${sellTokenSymbol.grey}]\nShield Fee:   (${buyFee.grey}) [${buyTokenSymbol.grey}]`;
+    pushCardLine(display, sellHeader);
     if (!isPublicSend) {
-      display.push(feeInfo);
+      const ephemeralAddress = ephemeralState?.currentAddress
+        ? getFormattedAddress(ephemeralState.currentAddress)
+        : "Unknown";
+      const ephemeralMeta = isDefined(ephemeralState)
+        ? `Index #${ephemeralState.currentIndex} · ${ephemeralState.knownCount} known`
+        : "not synced";
+      pushCardLine(
+        display,
+        `Ephemeral: ${ephemeralAddress.cyan} ${`(${ephemeralMeta})`.dim}`,
+      );
     }
-
-    display.push(``.padEnd(50, "=*=").grey);
+    display.push(sectionDivider);
+    pushCardLine(display, sellInfo);
+    buyInfo.split("\n").forEach((line) => pushCardLine(display, line));
+    if (!isPublicSend) {
+      feeInfo.split("\n").forEach((line) => pushCardLine(display, line));
+    }
+    display.push(sectionDivider);
   } else {
     if (isDefined(erc20Amounts)) {
+      pushCardLine(display, "Transfers");
+      display.push(sectionDivider);
       for (const bal of erc20Amounts as RailgunSelectedAmount[]) {
         const formattedAmount = parseFloat(
           formatUnits(bal.selectedAmount, bal.decimals) ?? "0",
         )
           .toFixed(8)
           .toString().yellow;
-        display.push(
-          `${formattedAmount} | [${bal.symbol.cyan}] [TO]: ${
+        pushCardLine(
+          display,
+          `${formattedAmount} [${bal.symbol.cyan}]  ->  ${
             getFormattedAddress(bal.recipientAddress).green
           }`,
         );
       }
     }
-    display.push(``.padEnd(50, "=*=").grey);
+    display.push(sectionDivider);
   }
   if (isDefined(privateGasEstimate)) {
     const formattedBroadcasterAddress = selectedBroadcaster
@@ -264,16 +297,18 @@ const getDisplayTransactions = async (
       : "";
 
     const selectedBroadcasterInfo = selectedBroadcaster
-      ? `Selected Broadcaster:  ${formattedBroadcasterAddress.cyan}`
+      ? ` · Broadcaster: ${formattedBroadcasterAddress.cyan}`
       : "";
 
-    display.push(
+    pushCardLine(
+      display,
       `Network Fee: ${
         privateGasEstimate.estimatedCost.toFixed(8).toString().yellow
-      } [${privateGasEstimate.symbol.cyan}] ${selectedBroadcasterInfo}`.green,
+      } [${privateGasEstimate.symbol.cyan}]${selectedBroadcasterInfo}`.green,
     );
-    display.push(``.padEnd(50, "=*=").grey);
+    display.push(sectionDivider);
   }
+  display.push(bottomBorder);
   return display.join("\n") + "\n";
 };
 

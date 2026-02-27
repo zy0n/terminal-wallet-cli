@@ -56,17 +56,9 @@ const findKnownIndexForAddress = (
 
 export const shouldRatchetForTransaction = (
   transactionType: RailgunTransaction,
-  isBroadcasted: boolean,
+  _isBroadcasted: boolean,
 ) => {
-  if (transactionType === RailgunTransaction.Private0XSwap) {
-    return true;
-  }
-
-  if (transactionType === RailgunTransaction.UnshieldBase && isBroadcasted) {
-    return true;
-  }
-
-  return false;
+  return transactionType === RailgunTransaction.Private0XSwap;
 };
 
 export const syncCurrentEphemeralWallet = async (
