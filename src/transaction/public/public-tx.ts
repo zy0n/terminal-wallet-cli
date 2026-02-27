@@ -2,10 +2,12 @@ import {
   NetworkName,
   RailgunERC20AmountRecipient,
   TransactionGasDetails,
+  isDefined,
 } from "@railgun-community/shared-models";
 import {
   Contract,
   ContractTransaction,
+  TransactionReceipt,
   TransactionResponse,
   formatUnits,
   JsonRpcProvider
@@ -86,12 +88,8 @@ export const waitOnTx = async (
   txResponse: TransactionResponse,
   txTimeout: number,
 ) => {
-  await promiseTimeout(
-    txResponse.wait().catch((err) => {
-      console.log(err);
-    }),
-    txTimeout,
-  );
+  const receipt = await promiseTimeout(txResponse.wait(), txTimeout);
+  return receipt as Optional<TransactionReceipt>;
 };
 
 export const waitForTx = async (
@@ -99,9 +97,11 @@ export const waitForTx = async (
   txTimeout = 3 * 60 * 1000,
 ) => {
   try {
-    await waitOnTx(txResponse, txTimeout);
+    const receipt = await waitOnTx(txResponse, txTimeout);
+    return isDefined(receipt) && receipt.status === 1;
   } catch (err: Error | any) {
     console.log(`Transaction ${txResponse.hash} error: ${err.message}`);
+    return false;
   }
 };
 
@@ -116,9 +116,12 @@ export const waitForRelayedTx = async (
     txResponse = await provider.getTransaction(txHash);
 
     if (txResponse !== null) {
-      await waitOnTx(txResponse, txTimeout);
+      const receipt = await waitOnTx(txResponse, txTimeout);
+      return isDefined(receipt) && receipt.status === 1;
     }
+    return false;
   } catch (err: Error | any) {
     console.log(`Transaction ${txHash} error: ${err.message}`);
+    return false;
   }
 };

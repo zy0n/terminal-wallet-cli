@@ -105,6 +105,7 @@ import { setStatusText } from "../ui/status-ui";
 import { getWrappedTokenBalance } from "../balance/balance-util";
 import { clearConsoleBuffer } from "../util/error-util";
 import { getMemoTextPrompt } from "../ui/memo-ui";
+import { ratchetEphemeralWalletOnSuccess } from "../wallet/ephemeral-wallet-manager";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Select, Input } = require("enquirer");
 
@@ -294,8 +295,26 @@ export const getSelfSignerWalletPrompt = async () => {
   return getWalletInfoForName(result);
 };
 
-const bgWatchRelayedTx = async (chainName: NetworkName, txHash: string) => {
-  await waitForRelayedTx(chainName, txHash);
+const bgWatchRelayedTx = async (
+  chainName: NetworkName,
+  txHash: string,
+  transactionType: RailgunTransaction,
+  encryptionKey?: string,
+) => {
+  const success = await waitForRelayedTx(chainName, txHash);
+  if (!success) {
+    setStatusText(`Transaction failed: ${txHash}`.red, 30000, true);
+    return;
+  }
+
+  await ratchetEphemeralWalletOnSuccess(
+    transactionType,
+    true,
+    encryptionKey,
+  ).catch((err) => {
+    console.log(`Failed to ratchet ephemeral wallet: ${(err as Error).message}`);
+  });
+
   const blockScanURL = getTransactionURLForChain(chainName, txHash);
   setStatusText(`Transaction Mined: ${blockScanURL} `.yellow, 30000, true);
 };
@@ -303,9 +322,24 @@ const bgWatchRelayedTx = async (chainName: NetworkName, txHash: string) => {
 const bgWatchSelfSignedTx = async (
   chainName: NetworkName,
   txResult: TransactionResponse,
+  transactionType: RailgunTransaction,
+  encryptionKey?: string,
 ) => {
   const { hash } = txResult;
-  await waitForTx(txResult);
+  const success = await waitForTx(txResult);
+  if (!success) {
+    setStatusText(`Transaction failed: ${hash}`.red, 30000, true);
+    return;
+  }
+
+  await ratchetEphemeralWalletOnSuccess(
+    transactionType,
+    false,
+    encryptionKey,
+  ).catch((err) => {
+    console.log(`Failed to ratchet ephemeral wallet: ${(err as Error).message}`);
+  });
+
   const blockScanURL = getTransactionURLForChain(chainName, hash);
   setStatusText(`Transaction Mined: ${blockScanURL} `.yellow, 30000, true);
 };
@@ -320,6 +354,7 @@ export const sendBroadcastedTransaction = async (
   provedTransaction: any,
   broadcasterSelection: any,
   chainName: NetworkName,
+  encryptionKey?: string,
 ) => {
   const useRelayAdapt =
     transactionType === RailgunTransaction.UnshieldBase ||
@@ -350,7 +385,7 @@ export const sendBroadcastedTransaction = async (
   const blockScanURL = getTransactionURLForChain(chainName, sendResult);
   setStatusText(`Waiting on TX to be Mined : ${blockScanURL} `.yellow);
 
-  bgWatchRelayedTx(chainName, sendResult);
+  bgWatchRelayedTx(chainName, sendResult, transactionType, encryptionKey);
   txScanReset();
 
   return sendResult;
@@ -360,6 +395,8 @@ export const sendSelfSignedTransaction = async (
   selfSignerInfo: any,
   chainName: NetworkName,
   provedTransaction: any,
+  transactionType = RailgunTransaction.PublicTransfer,
+  encryptionKey?: string,
 ) => {
   const ethersWallet = await getEthersWalletForSigner(
     selfSignerInfo,
@@ -372,7 +409,7 @@ export const sendSelfSignedTransaction = async (
     const blockScanURL = getTransactionURLForChain(chainName, txResult.hash);
     setStatusText(`Waiting on TX to be Mined : ${blockScanURL} `.yellow);
 
-    bgWatchSelfSignedTx(chainName, txResult);
+    bgWatchSelfSignedTx(chainName, txResult, transactionType, encryptionKey);
     txScanReset();
     return txResult;
   } else {
@@ -381,7 +418,7 @@ export const sendSelfSignedTransaction = async (
       const blockScanURL = getTransactionURLForChain(chainName, txResult.hash);
       setStatusText(`Waiting on TX to be Mined : ${blockScanURL} `.yellow);
 
-      bgWatchSelfSignedTx(chainName, txResult);
+      bgWatchSelfSignedTx(chainName, txResult, transactionType, encryptionKey);
       txScanReset();
       return txResult;
     }
@@ -1574,6 +1611,7 @@ export const runTransactionBuilder = async (
               provedTransaction,
               broadcasterSelection,
               chainName,
+              encryptionKey,
             );
           } else {
             // SELF SIGNED TRANSACTIONS
@@ -1581,6 +1619,8 @@ export const runTransactionBuilder = async (
               selfSignerInfo,
               chainName,
               provedTransaction,
+              transactionType,
+              encryptionKey,
             );
           }
         } catch (error) {

@@ -33,6 +33,13 @@ export type WalletCache = {
   publicAddress?: string;
 };
 
+export type EphemeralWalletCache = {
+  currentIndex: number;
+  addressByIndex: MapType<string>;
+  lastKnownAddress?: string;
+  lastUpdated: number;
+};
+
 export type KnownAddressKey = {
   name: string;
   publicAddress?: string;
@@ -46,6 +53,7 @@ export type KeychainFile = {
   name: string;
   salt: string;
   wallets?: MapType<WalletCache>;
+  ephemeralWallets?: MapType<EphemeralWalletCache>;
   knownAddresses?: KnownAddressKey[];
   currentNetwork?: NetworkName;
   selectedWallet?: string;
