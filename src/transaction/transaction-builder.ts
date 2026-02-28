@@ -84,6 +84,7 @@ import {
 } from "./public/public-tx";
 import { populateAndCalculateGasForBaseTokenTransaction } from "./public/public-base-tx";
 import { runSwapTokenSelectionPrompt } from "../ui/zer0x-ui";
+import { runGasFeeSelectionPrompt } from "../ui/gas-ui";
 import {
   calculateGasForPublicSwapTransaction,
   getProvedZer0XSwapTransaction,
@@ -1260,6 +1261,19 @@ export const runTransactionBuilder = async (
       }
       let newRefObj = resultObj;
       try {
+        const needsImmediateGasEstimate =
+          transactionType === RailgunTransaction.Shield ||
+          transactionType === RailgunTransaction.ShieldBase ||
+          transactionType === RailgunTransaction.PublicTransfer ||
+          transactionType === RailgunTransaction.PublicBaseTransfer ||
+          transactionType === RailgunTransaction.Public0XSwap;
+
+        if (needsImmediateGasEstimate) {
+          await runGasFeeSelectionPrompt(chainName).catch((err) => {
+            console.log((err as Error).message);
+          });
+        }
+
         switch (transactionType) {
           case RailgunTransaction.Transfer:
           case RailgunTransaction.Unshield:
@@ -1464,6 +1478,10 @@ export const runTransactionBuilder = async (
         if (!_bestBroadcaster) {
           _selfSignerInfo = await getSelfSignerWalletPrompt();
         }
+
+        await runGasFeeSelectionPrompt(chainName).catch((err) => {
+          console.log((err as Error).message);
+        });
 
         // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check
         switch (transactionType) {

@@ -9,8 +9,151 @@ import {
 } from "@railgun-community/shared-models";
 import { ContractTransaction } from "ethers";
 import { throwError } from "../util/util";
-import { getGasEstimateMatrix, getGasEstimates } from "./gas-fee";
+import { CustomGasEstimate } from "../models/gas-models";
+import { getGasEstimates } from "./gas-fee";
 import { getProviderForChain } from "../network/network-util";
+
+export type GasFeeSelectionPreset =
+  | "recommended"
+  | "slow"
+  | "average"
+  | "fast"
+  | "custom";
+
+export type GasFeeSelection = {
+  preset: GasFeeSelectionPreset;
+  gasPrice?: bigint;
+  maxFeePerGas?: bigint;
+  maxPriorityFeePerGas?: bigint;
+};
+
+export type GasSelectionQuote = {
+  gasPrice?: bigint;
+  maxFeePerGas?: bigint;
+  maxPriorityFeePerGas?: bigint;
+};
+
+const gasSelectionByChain = new Map<NetworkName, GasFeeSelection>();
+
+const normalizeOptionalBigInt = (value: unknown): bigint | undefined => {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return BigInt(value);
+  }
+  if (typeof value === "string" && value.length > 0) {
+    return BigInt(value);
+  }
+  return undefined;
+};
+
+const buildPresetQuote = (
+  gasEstimate: CustomGasEstimate,
+  preset: Exclude<GasFeeSelectionPreset, "custom">,
+): GasSelectionQuote => {
+  const { gasPrice, baseFeePerGas, maxFeePerGas, maxPriorityFeePerGas } =
+    gasEstimate;
+
+  if (preset === "recommended") {
+    return {
+      gasPrice,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+    };
+  }
+
+  const tipByPreset: Record<"slow" | "average" | "fast", bigint> = {
+    slow: gasEstimate.slow,
+    average: gasEstimate.average,
+    fast: gasEstimate.fast,
+  };
+
+  const selectedTip = tipByPreset[preset];
+  return {
+    gasPrice,
+    maxFeePerGas: baseFeePerGas + selectedTip,
+    maxPriorityFeePerGas: selectedTip,
+  };
+};
+
+const applyGasSelection = (
+  chainName: NetworkName,
+  baseFeeData: GasSelectionQuote,
+  currentGasEstimate?: CustomGasEstimate,
+): GasSelectionQuote => {
+  const selected = gasSelectionByChain.get(chainName);
+  if (!selected) {
+    return baseFeeData;
+  }
+
+  if (selected.preset === "custom") {
+    return {
+      gasPrice: selected.gasPrice ?? baseFeeData.gasPrice,
+      maxFeePerGas: selected.maxFeePerGas ?? baseFeeData.maxFeePerGas,
+      maxPriorityFeePerGas:
+        selected.maxPriorityFeePerGas ?? baseFeeData.maxPriorityFeePerGas,
+    };
+  }
+
+  if (isDefined(currentGasEstimate)) {
+    return buildPresetQuote(currentGasEstimate, selected.preset);
+  }
+
+  return baseFeeData;
+};
+
+export const setGasFeeSelectionForChain = (
+  chainName: NetworkName,
+  selection?: GasFeeSelection,
+) => {
+  if (!selection) {
+    gasSelectionByChain.delete(chainName);
+    return;
+  }
+  gasSelectionByChain.set(chainName, selection);
+};
+
+export const getGasFeeSelectionForChain = (chainName: NetworkName) => {
+  return gasSelectionByChain.get(chainName);
+};
+
+export const getGasSelectionQuotes = async (chainName: NetworkName) => {
+  switch (chainName) {
+    case NetworkName.Ethereum:
+    case NetworkName.Polygon: {
+      const estimate = await getGasEstimates(chainName);
+      return {
+        recommended: buildPresetQuote(estimate, "recommended"),
+        slow: buildPresetQuote(estimate, "slow"),
+        average: buildPresetQuote(estimate, "average"),
+        fast: buildPresetQuote(estimate, "fast"),
+        supportsSpeedPresets: true,
+      };
+    }
+  }
+
+  const provider = getProviderForChain(chainName);
+  const feeData = await provider.getFeeData().catch(() => undefined);
+
+  if (!isDefined(feeData)) {
+    throw new Error("Unable to get Gas Fee Data");
+  }
+
+  const recommended = {
+    gasPrice: normalizeOptionalBigInt(feeData.gasPrice),
+    maxFeePerGas: normalizeOptionalBigInt(feeData.maxFeePerGas),
+    maxPriorityFeePerGas: normalizeOptionalBigInt(feeData.maxPriorityFeePerGas),
+  };
+
+  return {
+    recommended,
+    slow: recommended,
+    average: recommended,
+    fast: recommended,
+    supportsSpeedPresets: false,
+  };
+};
 
 export const calculatePublicGasFee = async (
   transaction: ContractTransaction,
@@ -77,24 +220,35 @@ export const getFeeDetailsForChain = async (chainName: NetworkName) => {
     case NetworkName.Ethereum:
     case NetworkName.Polygon: {
       const currentGasEstimate = await getGasEstimates(chainName);
-      // const estimateResults = getGasEstimateMatrix(currentGasEstimate);
-
-      const { gasPrice, maxFeePerGas, maxPriorityFeePerGas } =
-        currentGasEstimate;
+      const feeData = applyGasSelection(
+        chainName,
+        buildPresetQuote(currentGasEstimate, "recommended"),
+        currentGasEstimate,
+      );
 
       return {
-        gasPrice,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
+        gasPrice: feeData.gasPrice,
+        maxFeePerGas: feeData.maxFeePerGas,
+        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
       };
     }
   }
   const provider = getProviderForChain(chainName);
-  const feeData = await provider.getFeeData().catch((err) => {
+  const feeData = await provider.getFeeData().catch(() => {
     return undefined;
   });
   if (isDefined(feeData)) {
-    return feeData;
+    const selectedFeeData = applyGasSelection(chainName, {
+      gasPrice: normalizeOptionalBigInt(feeData.gasPrice),
+      maxFeePerGas: normalizeOptionalBigInt(feeData.maxFeePerGas),
+      maxPriorityFeePerGas: normalizeOptionalBigInt(feeData.maxPriorityFeePerGas),
+    });
+
+    return {
+      gasPrice: selectedFeeData.gasPrice,
+      maxFeePerGas: selectedFeeData.maxFeePerGas,
+      maxPriorityFeePerGas: selectedFeeData.maxPriorityFeePerGas,
+    };
   }
   throw new Error("Unable to get Gas Fee Data");
 };
