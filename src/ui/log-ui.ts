@@ -1,6 +1,6 @@
 import "colors";
 
-const MAX_LOGS = 5;
+const MAX_LOGS = 500;
 const MAX_LINE_LEN = 100;
 const DUPLICATE_WINDOW_MS = 10000;
 
@@ -135,4 +135,26 @@ export const getMainUILogComponent = (): string => {
   ];
 
   return lines.join("\n");
+};
+
+export const getUILogViewerLines = (): string[] => {
+  if (uiLogEntries.length === 0) {
+    return ["No runtime logs captured yet.".grey];
+  }
+
+  const errorCount = uiLogEntries.filter((entry) => entry.level === "error").length;
+  const summary = [
+    `Entries: ${uiLogEntries.length}`.dim,
+    `Errors: ${errorCount}`.dim,
+    `Filtered: ${suppressedNoiseCount}`.dim,
+  ].join("  ");
+
+  const entries = [...uiLogEntries].reverse().map((entry) => {
+    const level = entry.level === "error" ? "[ERR]".red : "[LOG]".grey;
+    const repeat = entry.count > 1 ? ` ${`x${entry.count}`.dim}` : "";
+    const timestamp = new Date(entry.ts).toLocaleTimeString().dim;
+    return `${timestamp} ${level} ${entry.message}${repeat}`;
+  });
+
+  return [summary, ...entries];
 };

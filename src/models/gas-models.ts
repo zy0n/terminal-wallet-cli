@@ -1,8 +1,8 @@
 export type FeeHistoryResponse = {
-    oldestBlock: bigint;
-    reward: [string[]];
-    baseFeePerGas: bigint[];
-    gasUsedRatio: bigint[];
+    oldestBlock: string | bigint;
+    reward: string[][];
+    baseFeePerGas: (string | bigint)[];
+    gasUsedRatio: (string | number)[];
   };
 export type CustomGasEstimate = {
   gasPrice: bigint;
@@ -14,7 +14,7 @@ export type CustomGasEstimate = {
   fast: bigint;
 };
 export type FeeHistoryBlock = {
-  blockNumber: number | string;
+  blockNumber: bigint | number | string;
   baseFeePerGas: bigint;
   gasUsedRatio: number;
   priorityFeePerGas: bigint[];

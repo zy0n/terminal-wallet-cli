@@ -70,7 +70,7 @@ import { getScanProgressString, walletManager } from "../wallet/wallet-manager";
 import "colors";
 import { getStatusText, setStatusText } from "./status-ui";
 import { runRPCEditorPrompt } from "./provider-ui";
-import { getMainUILogComponent } from "./log-ui";
+import { getUILogViewerLines } from "./log-ui";
 
 import { runMechMenu } from "./mech-ui";
 import { runTransactionHistoryViewer } from "./transaction-history-ui";
@@ -137,6 +137,7 @@ const HOTKEY_TO_CHOICE: Record<string, string> = {
   b: "toggle-balance",
   q: "reset-broadcasters",
   e: "edit-rpc",
+  l: "view-runtime-logs",
   o: "toggle-responsive",
   x: "exit",
 };
@@ -387,6 +388,26 @@ const runWalletToolsPrompt = async (chainName: NetworkName) => {
   }
 };
 
+const runRuntimeLogsPrompt = async () => {
+  const logLines = getUILogViewerLines();
+  const choices = logLines.map((line, index) => {
+    return {
+      name: `runtime-log-${index}`,
+      message: line,
+      disabled: true,
+    };
+  });
+
+  const logsPrompt = new Select({
+    header: " ",
+    message: "Runtime Logs (scroll to view full history)",
+    choices: [...choices, { name: "exit-menu", message: "Go Back".grey }],
+    multiple: false,
+  });
+
+  await logsPrompt.run().catch(confirmPromptCatch);
+};
+
 const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
   const chain = getChainForName(networkName);
 
@@ -419,7 +440,6 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       ].join("\n");
 
       const statusString = getStatusText();
-      const logComponent = getMainUILogComponent();
       const scanString = getScanProgressString();
       const balanceScanned =
         scanString === "" ? statusString : `${scanString}${statusString}`;
@@ -443,7 +463,6 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         walletInfoString,
         broadcasterStatus,
         balanceBlock,
-        logComponent,
         `${
           !isMenuResponsive()
             ? "Auto Refresh Disabled, Refresh on Movement Enabled.\n".yellow.dim
@@ -561,7 +580,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       const rightSections = [
         ...buildMenuSection(
           `${">>".grey} ${"Utilities".grey.bold} ${"<<".grey}`,
-          [...visibleWithHotkeys.slice(14, 25), "", visibleWithHotkeys[25]],
+          [...visibleWithHotkeys.slice(14, 26), "", visibleWithHotkeys[26]],
         ),
       ];
 
@@ -727,6 +746,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       },
       { name: "reset-broadcasters", message: "Reset Broadcaster Connection" },
       { name: "edit-rpc", message: "Edit RPC Providers" },
+      { name: "view-runtime-logs", message: "View Runtime Logs" },
       {
         name: "toggle-responsive",
         message: `${isMenuResponsive() ? "Disable" : "Enable"} Responsive Menu`,
@@ -954,6 +974,10 @@ export const runMainMenu = async () => {
     }
     case "edit-rpc": {
       await runRPCEditorPrompt(networkName);
+      break;
+    }
+    case "view-runtime-logs": {
+      await runRuntimeLogsPrompt();
       break;
     }
     case "toggle-responsive": {
