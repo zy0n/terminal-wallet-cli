@@ -34,6 +34,7 @@ import {
   getWrappedTokenInfoForChain,
 } from "../../network/network-util";
 import { getFeeDetailsForChain } from "../../gas/gas-util";
+import { Authorization } from "ethers/transaction";
 
 export const getOriginalGasDetailsForPrivateTransaction = async (
   chainName: NetworkName,
@@ -75,7 +76,9 @@ export const getOriginalGasDetailsForPrivateTransaction = async (
         break;
       }
       // self relayed transactions
-      case EVMGasType.Type2: {
+
+      case EVMGasType.Type2: 
+      case EVMGasType.Type4: {
         originalGasDetails = {
           evmGasType, // Type 2 for self-relayed transactions
           gasEstimate: 0n, // Always 0, we don't have this yet.
@@ -148,7 +151,8 @@ export const calculateSelfSignedGasEstimate = (
     case EVMGasType.Type1: {
       return estimatedGasDetails.gasPrice * gasEstimate;
     }
-    case EVMGasType.Type2: {
+    case EVMGasType.Type2: 
+    case EVMGasType.Type4: {
       return estimatedGasDetails.maxFeePerGas * gasEstimate;
     }
     default: {
@@ -316,14 +320,22 @@ export const getBroadcasterTranaction = async (
   tx: any,
   networkName: NetworkName,
   useRelayAdapt: boolean,
+  authorization?: Authorization
 ) => {
   const txidVersion = TXIDVersion.V2_PoseidonMerkle;
   const { to, data } = tx.transaction;
+  console.log(tx)
   const { nullifiers, preTransactionPOIsPerTxidLeafPerList } = tx;
   const broadcasterFeesID = tx.feesID;
   const chain = getChainForName(networkName);
-  const overallBatchMinGasPrice = tx.transaction.gasPrice;
+  const overallBatchMinGasPrice = tx.transaction.gasPrice ?? tx.transaction.maxFeePerGas ?? 0n;
   const relayTx = getWakuTransaction();
+
+  const type4FeeOverrides = tx.transaction.type === EVMGasType.Type4 ? {
+    maxFeePerGas: tx.transaction.maxFeePerGas,
+    maxPriorityFeePerGas: tx.transaction.maxPriorityFeePerGas > 0n ? tx.transaction.maxPriorityFeePerGas : parseUnits('0.1', 'gwei'),
+  } : undefined;
+  console.log(type4FeeOverrides)
   const encryptedTransaction = await relayTx.create(
     txidVersion,
     to,
@@ -335,6 +347,8 @@ export const getBroadcasterTranaction = async (
     overallBatchMinGasPrice,
     useRelayAdapt,
     preTransactionPOIsPerTxidLeafPerList,
+    authorization,
+    type4FeeOverrides,
   );
   return encryptedTransaction;
 };

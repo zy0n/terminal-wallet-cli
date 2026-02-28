@@ -402,6 +402,7 @@ export const sendBroadcastedTransaction = async (
     },
     chainName,
     useRelayAdapt,
+    provedTransaction.transaction.authorizationList[0]
   );
 
   console.log(
@@ -1675,6 +1676,7 @@ export const runTransactionBuilder = async (
             );
           }
         } catch (error) {
+          console.log(error)
           const errResponseMessage = `Error Response: ${(error as Error).message}`
           console.log(errResponseMessage);
           await confirmPromptCatchRetry("");

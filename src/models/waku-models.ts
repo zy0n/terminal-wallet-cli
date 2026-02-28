@@ -5,6 +5,7 @@ import {
   SelectedBroadcaster,
   TXIDVersion,
 } from "@railgun-community/shared-models";
+import { Authorization } from "ethers";
 
 export type BroadcasterOptions = {
   pubSubTopic?: string;
@@ -49,15 +50,19 @@ export type WakuBroadcasterClient = {
 };
 export type WakuBroadcasterTransaction = {
   create: (
-    txidVersionForInputs: TXIDVersion,
-    to: string,
-    data: string,
-    broadcasterRailgunAddress: string,
-    broadcasterFeesID: string,
-    chain: Chain,
-    nullifiers: string[],
-    overallBatchMinGasPrice: bigint,
-    useRelayAdapt: boolean,
-    preTransactionPOIsPerTxidLeafPerList: PreTransactionPOIsPerTxidLeafPerList,
+  txidVersionForInputs: TXIDVersion, 
+  to: string, data: string, 
+  broadcasterRailgunAddress: string,
+  broadcasterFeesID: string, 
+  chain: Chain,
+  nullifiers: string[],
+  overallBatchMinGasPrice: bigint,
+  useRelayAdapt: boolean,
+  preTransactionPOIsPerTxidLeafPerList: PreTransactionPOIsPerTxidLeafPerList, 
+  authorization?: Authorization,
+  type4FeeOverrides?: {
+      maxFeePerGas: bigint;
+      maxPriorityFeePerGas: bigint;
+    }
   ) => { send: () => Promise<string> };
 };

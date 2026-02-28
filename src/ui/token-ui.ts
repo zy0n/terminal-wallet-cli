@@ -151,6 +151,75 @@ export const runFeeTokenSelector = async (
   amountRecipients: RailgunERC20AmountRecipient[],
   currentBroadcaster?: SelectedBroadcaster,
 ): Promise<{ bestBroadcaster: SelectedBroadcaster } | undefined> => {
+  const formatFeeRatioToOneEth = (feePerUnitGas: string) => {
+    const ratio = parseFloat(formatUnits(BigInt(feePerUnitGas), 18));
+    return ratio.toFixed(6);
+  };
+
+  const getBroadcasterChoicesForToken = (
+    broadcasters: SelectedBroadcaster[],
+    feeTokenSymbol: string,
+  ) => {
+    return broadcasters.map((broadcaster, index) => {
+      const shortAddress = getFormattedAddress(broadcaster.railgunAddress);
+      const reliabilityPct = Math.round((broadcaster.tokenFee.reliability ?? 0) * 100);
+      const feeRatioToOneEth = formatFeeRatioToOneEth(
+        broadcaster.tokenFee.feePerUnitGas,
+      );
+      return {
+        name: `${index}`,
+        message: `${shortAddress.cyan}  1 ETH: ${`${feeRatioToOneEth} ${feeTokenSymbol}`.yellow}  reliability: ${`${reliabilityPct}%`.green}  wallets: ${broadcaster.tokenFee.availableWallets}`,
+      };
+    });
+  };
+
+  const broadcasterSelectionPrompt = async (feeTokenAddress: string) => {
+    const waku = getWakuClient();
+    const chain = getChainForName(chainName);
+    const feeTokenInfo = await getTokenInfo(chainName, feeTokenAddress).catch(
+      () => undefined,
+    );
+    const feeTokenSymbol = feeTokenInfo?.symbol ?? "TOKEN";
+
+    const broadcasters = waku.findBroadcastersForToken(
+      chain,
+      feeTokenAddress.toLowerCase(),
+      true,
+    );
+
+    if (!isDefined(broadcasters) || broadcasters.length === 0) {
+      return undefined;
+    }
+
+    const ordered = [...broadcasters].sort((a, b) => {
+      const feeA = BigInt(a.tokenFee.feePerUnitGas);
+      const feeB = BigInt(b.tokenFee.feePerUnitGas);
+      return feeA < feeB ? -1 : feeA > feeB ? 1 : 0;
+    });
+
+    const prompt = new Select({
+      header: " ",
+      message: "Select Broadcaster",
+      choices: [
+        { name: "auto-cheapest", message: "Auto-pick cheapest".green },
+        ...getBroadcasterChoicesForToken(ordered, feeTokenSymbol),
+        { name: "go-back", message: "Go Back".grey },
+      ],
+      multiple: false,
+    });
+
+    const selected = await prompt.run().catch(confirmPromptCatch);
+    if (!selected || selected === "go-back") {
+      return undefined;
+    }
+
+    if (selected === "auto-cheapest") {
+      return ordered[0];
+    }
+
+    return ordered[parseInt(selected, 10)];
+  };
+
   const additionalChoices = currentBroadcaster
     ? [
         {
@@ -208,13 +277,8 @@ export const runFeeTokenSelector = async (
             feeTokenAddress = feeToken.tokenAddress;
           }
           try {
-            const waku = getWakuClient();
-            const chain = getChainForName(chainName);
-
-            const bestBroadcaster = await waku.findBestBroadcaster(
-              chain,
-              feeTokenAddress.toLowerCase(),
-              true,
+            const bestBroadcaster = await broadcasterSelectionPrompt(
+              feeTokenAddress,
             );
             if (bestBroadcaster) {
               return { bestBroadcaster };
