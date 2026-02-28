@@ -1261,22 +1261,6 @@ export const runTransactionBuilder = async (
       }
       let newRefObj = resultObj;
       try {
-        const needsImmediateGasEstimate =
-          transactionType === RailgunTransaction.Shield ||
-          transactionType === RailgunTransaction.ShieldBase ||
-          transactionType === RailgunTransaction.PublicTransfer ||
-          transactionType === RailgunTransaction.PublicBaseTransfer ||
-          transactionType === RailgunTransaction.Public0XSwap;
-
-        if (needsImmediateGasEstimate) {
-          await runGasFeeSelectionPrompt(
-            chainName,
-            privateGasEstimate?.estimatedGasDetails.gasEstimate,
-          ).catch((err) => {
-            console.log((err as Error).message);
-          });
-        }
-
         switch (transactionType) {
           case RailgunTransaction.Transfer:
           case RailgunTransaction.Unshield:
@@ -1292,10 +1276,25 @@ export const runTransactionBuilder = async (
           }
           case RailgunTransaction.Shield: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
-            const gasEstimate = await getShieldERC20TransactionGasDetails(
+            let gasEstimate = await getShieldERC20TransactionGasDetails(
               chainName,
               erc20AmountRecipients,
             );
+
+            const updatedGasSelection = await runGasFeeSelectionPrompt(
+              chainName,
+              gasEstimate.estimatedGasDetails.gasEstimate,
+            ).catch((err) => {
+              console.log((err as Error).message);
+              return false;
+            });
+            if (updatedGasSelection) {
+              gasEstimate = await getShieldERC20TransactionGasDetails(
+                chainName,
+                erc20AmountRecipients,
+              );
+            }
+
             header = await getDisplayTransactions(
               selections,
               broadcasterSelection,
@@ -1315,12 +1314,29 @@ export const runTransactionBuilder = async (
           }
           case RailgunTransaction.ShieldBase: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
-            const gasEstimate = await getShieldBaseTokenGasDetails(
+            let gasEstimate = await getShieldBaseTokenGasDetails(
               chainName,
               erc20AmountRecipients[0],
               getCurrentRailgunID(),
               password
             );
+
+            const updatedGasSelection = await runGasFeeSelectionPrompt(
+              chainName,
+              gasEstimate.estimatedGasDetails.gasEstimate,
+            ).catch((err) => {
+              console.log((err as Error).message);
+              return false;
+            });
+            if (updatedGasSelection) {
+              gasEstimate = await getShieldBaseTokenGasDetails(
+                chainName,
+                erc20AmountRecipients[0],
+                getCurrentRailgunID(),
+                password,
+              );
+            }
+
             header = await getDisplayTransactions(
               selections,
               broadcasterSelection,
@@ -1341,11 +1357,26 @@ export const runTransactionBuilder = async (
           case RailgunTransaction.PublicTransfer: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
 
-            const { privateGasEstimate: gasEstimate, populatedTransaction } =
+            let { privateGasEstimate: gasEstimate, populatedTransaction } =
               await populateAndCalculateGasForERC20Transaction(
                 chainName,
                 erc20AmountRecipients[0],
               );
+
+            const updatedGasSelection = await runGasFeeSelectionPrompt(
+              chainName,
+              gasEstimate.estimatedGasDetails.gasEstimate,
+            ).catch((err) => {
+              console.log((err as Error).message);
+              return false;
+            });
+            if (updatedGasSelection) {
+              ({ privateGasEstimate: gasEstimate, populatedTransaction } =
+                await populateAndCalculateGasForERC20Transaction(
+                  chainName,
+                  erc20AmountRecipients[0],
+                ));
+            }
 
             header = await getDisplayTransactions(
               selections,
@@ -1368,11 +1399,27 @@ export const runTransactionBuilder = async (
           }
           case RailgunTransaction.PublicBaseTransfer: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
-            const { privateGasEstimate: gasEstimate, populatedTransaction } =
+            let { privateGasEstimate: gasEstimate, populatedTransaction } =
               await populateAndCalculateGasForBaseTokenTransaction(
                 chainName,
                 erc20AmountRecipients[0],
               );
+
+            const updatedGasSelection = await runGasFeeSelectionPrompt(
+              chainName,
+              gasEstimate.estimatedGasDetails.gasEstimate,
+            ).catch((err) => {
+              console.log((err as Error).message);
+              return false;
+            });
+            if (updatedGasSelection) {
+              ({ privateGasEstimate: gasEstimate, populatedTransaction } =
+                await populateAndCalculateGasForBaseTokenTransaction(
+                  chainName,
+                  erc20AmountRecipients[0],
+                ));
+            }
+
             header = await getDisplayTransactions(
               selections,
               broadcasterSelection,
@@ -1404,11 +1451,27 @@ export const runTransactionBuilder = async (
             break;
           }
           case RailgunTransaction.Public0XSwap: {
-            const { privateGasEstimate: gasEstimate, populatedTransaction } =
+            let { privateGasEstimate: gasEstimate, populatedTransaction } =
               await calculateGasForPublicSwapTransaction(
                 chainName,
                 swapSelections.zer0XInputs.quote.crossContractCall,
               );
+
+            const updatedGasSelection = await runGasFeeSelectionPrompt(
+              chainName,
+              gasEstimate.estimatedGasDetails.gasEstimate,
+            ).catch((err) => {
+              console.log((err as Error).message);
+              return false;
+            });
+            if (updatedGasSelection) {
+              ({ privateGasEstimate: gasEstimate, populatedTransaction } =
+                await calculateGasForPublicSwapTransaction(
+                  chainName,
+                  swapSelections.zer0XInputs.quote.crossContractCall,
+                ));
+            }
+
             header = await getDisplayTransactions(
               swapSelections,
               broadcasterSelection,
@@ -1482,13 +1545,6 @@ export const runTransactionBuilder = async (
           _selfSignerInfo = await getSelfSignerWalletPrompt();
         }
 
-        await runGasFeeSelectionPrompt(
-          chainName,
-          privateGasEstimate?.estimatedGasDetails.gasEstimate,
-        ).catch((err) => {
-          console.log((err as Error).message);
-        });
-
         // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check
         switch (transactionType) {
           case RailgunTransaction.Transfer: {
@@ -1534,6 +1590,62 @@ export const runTransactionBuilder = async (
               _bestBroadcaster,
             );
             break;
+          }
+        }
+
+        const updatedGasSelection = await runGasFeeSelectionPrompt(
+          chainName,
+          _privateGasEstimate?.estimatedGasDetails.gasEstimate,
+        ).catch((err) => {
+          console.log((err as Error).message);
+          return false;
+        });
+
+        if (updatedGasSelection) {
+          // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check
+          switch (transactionType) {
+            case RailgunTransaction.Transfer: {
+              const erc20AmountRecipients = getERC20AmountRecipients(selections);
+              _privateGasEstimate = await getPrivateTransactionGasEstimate(
+                chainName,
+                erc20AmountRecipients,
+                encryptionKey,
+                _bestBroadcaster,
+                privateMemo,
+              );
+              break;
+            }
+            case RailgunTransaction.Unshield: {
+              const erc20AmountRecipients = getERC20AmountRecipients(selections);
+              _privateGasEstimate = await getUnshieldERC20TransactionGasEstimate(
+                chainName,
+                erc20AmountRecipients,
+                encryptionKey,
+                _bestBroadcaster,
+              );
+              break;
+            }
+            case RailgunTransaction.UnshieldBase: {
+              const erc20AmountRecipients = getERC20AmountRecipients(selections);
+              const wrappedERC20Amount = erc20AmountRecipients[0];
+
+              _privateGasEstimate = await getUnshieldBaseTokenGasEstimate(
+                chainName,
+                wrappedERC20Amount,
+                encryptionKey,
+                _bestBroadcaster,
+              );
+              break;
+            }
+            case RailgunTransaction.Private0XSwap: {
+              _privateGasEstimate = await getZer0XSwapTransactionGasEstimate(
+                chainName,
+                swapSelections.zer0XInputs,
+                encryptionKey,
+                _bestBroadcaster,
+              );
+              break;
+            }
           }
         }
       } catch (err) {

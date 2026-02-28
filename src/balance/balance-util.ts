@@ -456,6 +456,53 @@ export const getDisplayStringFromBalance = (
   return balanceDisplayString;
 };
 
+const BALANCE_CARD_WIDTH = 74;
+
+const bucketLabelForDisplay = (bucketType: RailgunWalletBalanceBucket): string => {
+  return bucketType.replace(/([a-z])([A-Z])/g, "$1 $2");
+};
+
+const truncateLabel = (value: string, maxLength: number): string => {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  if (maxLength <= 1) {
+    return value.slice(0, maxLength);
+  }
+  return `${value.slice(0, maxLength - 1)}…`;
+};
+
+const padAnsiRight = (value: string, width: number): string => {
+  const visibleLength = stripColors(value).length;
+  if (visibleLength >= width) {
+    return value;
+  }
+  return `${value}${" ".repeat(width - visibleLength)}`;
+};
+
+const padAnsiLeft = (value: string, width: number): string => {
+  const visibleLength = stripColors(value).length;
+  if (visibleLength >= width) {
+    return value;
+  }
+  return `${" ".repeat(width - visibleLength)}${value}`;
+};
+
+const pushCardRow = (display: string[], content = "") => {
+  const innerWidth = BALANCE_CARD_WIDTH - 2;
+  display.push(`${"│".grey}${padAnsiRight(content, innerWidth)}${"│".grey}`);
+};
+
+const getAmountForDisplay = (
+  balance: RailgunDisplayBalance,
+  hideAmounts: boolean,
+): string => {
+  if (hideAmounts) {
+    return "***";
+  }
+  return readablePrecision(balance.amount, balance.decimals, 8);
+};
+
 export const getPrivateDisplayBalances = async (
   chainName: NetworkName,
   bucketType: RailgunWalletBalanceBucket,
@@ -482,9 +529,10 @@ export const getPrivateDisplayBalances = async (
     }
   }
   const balanceType = isPrivate ? "PRIVATE" : "PUBLIC";
-  const header = `${CHAIN_NAME.green} ${
-    isPrivate ? bucketType.green : ""
-  } ${balanceType} BALANCES`;
+  const bucketLabel = isPrivate
+    ? bucketLabelForDisplay(bucketType)
+    : "Spendable";
+  const header = `${CHAIN_NAME.green} ${balanceType.cyan} ${bucketLabel.yellow}`;
   const shieldPendingTimeline =
     isPrivate && bucketType === RailgunWalletBalanceBucket.ShieldPending
       ? await getShieldPendingTimelineFromHistory(chainName).catch(() => ({
@@ -492,56 +540,84 @@ export const getPrivateDisplayBalances = async (
           detailLines: [],
         }))
       : undefined;
-  const shieldPendingETA = isDefined(shieldPendingTimeline)
-    ? ` ${`(${shieldPendingTimeline.etaText})`.dim}`
-    : "";
-  const headLen = stripColors(header).length;
+  const summary = `${balances.length} token${balances.length === 1 ? "" : "s"} • ${nftBalances.length} NFT${nftBalances.length === 1 ? "" : "s"}`;
+
   display.push("");
-  const headerLine = `${header}${shieldPendingETA}`;
-  const headerPad = "".padEnd(70 - headLen, "=");
-  display.push(`${headerLine} ${headerPad.grey}`);
+  display.push(`${"╭".grey}${"─".repeat(BALANCE_CARD_WIDTH - 2).grey}${"╮".grey}`);
+  pushCardRow(display, header);
+  pushCardRow(display, `${"Assets".dim}: ${summary.dim}`);
+
+  if (isDefined(shieldPendingTimeline)) {
+    pushCardRow(display, `${"Timeline".dim}: ${shieldPendingTimeline.etaText.dim}`);
+  }
+
+  display.push(`${"├".grey}${"─".repeat(BALANCE_CARD_WIDTH - 2).grey}${"┤".grey}`);
 
   if (isDefined(shieldPendingTimeline) && shieldPendingTimeline.detailLines.length > 0) {
     for (const line of shieldPendingTimeline.detailLines) {
-      display.push(`${line}`.dim);
+      pushCardRow(display, `• ${line}`.dim);
     }
-    display.push("");
+    display.push(`${"├".grey}${"─".repeat(BALANCE_CARD_WIDTH - 2).grey}${"┤".grey}`);
   }
 
   if (balances.length === 0 && nftBalances.length === 0) {
     const balanceHeader = walletManager.menuLoaded ? "NO" : "LOADING";
-    display.push(`${balanceHeader} Balances...`.grey);
-    display.push("".padEnd(70, "=").grey);
+    pushCardRow(display, `${balanceHeader} balances...`.grey);
+    display.push(`${"╰".grey}${"─".repeat(BALANCE_CARD_WIDTH - 2).grey}${"╯".grey}`);
     return display.join("\n");
   }
 
-  const maxSymbolLength = getMaxSymbolLengthFromBalances(balances);
-  const maxBalanceLength = hideAmounts ? 3 : getMaxBalanceLength(balances);
-  for (const bal of balances) {
-    const balanceDisplayString = getDisplayStringFromBalance(
-      bal,
-      maxBalanceLength,
-      maxSymbolLength,
-      hideAmounts,
-    );
-    display.push(balanceDisplayString);
+  const sortedBalances = [...balances].sort((a, b) => {
+    if (a.amount === b.amount) {
+      return a.symbol.localeCompare(b.symbol);
+    }
+    return a.amount > b.amount ? -1 : 1;
+  });
+
+  const amountStrings = sortedBalances.map((balance) =>
+    getAmountForDisplay(balance, hideAmounts),
+  );
+  const amountColumnWidth = amountStrings.reduce((maxWidth, value) => {
+    return Math.max(maxWidth, stripColors(value).length);
+  }, hideAmounts ? 3 : 8);
+
+  const symbolColumnWidth = Math.max(
+    6,
+    sortedBalances.reduce((maxWidth, balance) => {
+      return Math.max(maxWidth, balance.symbol.length);
+    }, 0),
+  );
+
+  for (let index = 0; index < sortedBalances.length; index += 1) {
+    const balance = sortedBalances[index];
+    const amount = amountStrings[index];
+    const symbol = `[${balance.symbol}]`.cyan;
+    const symbolPadded = padAnsiRight(symbol, symbolColumnWidth + 2);
+    const amountPadded = padAnsiLeft(amount, amountColumnWidth);
+
+    const usedWidth = stripColors(`${symbolPadded} ${amountPadded}  `).length;
+    const availableNameWidth = Math.max(8, BALANCE_CARD_WIDTH - 2 - usedWidth);
+    const name = truncateLabel(balance.name, availableNameWidth);
+
+    pushCardRow(display, `${symbolPadded} ${amountPadded}  ${name}`);
   }
 
   if (nftBalances.length > 0) {
-    if (balances.length > 0) {
-      display.push("");
-    }
-    display.push(`${"NFTs".cyan.bold}:`);
+    display.push(`${"├".grey}${"─".repeat(BALANCE_CARD_WIDTH - 2).grey}${"┤".grey}`);
+    pushCardRow(display, `${"NFT COLLECTIONS".cyan.bold}`);
+
     for (const [index, nft] of nftBalances.entries()) {
-      display.push(
-        `  [${index}] ${nft.tokenName} (ID: ${nft.tokenSubID}) x${
-          hideAmounts ? "***" : nft.amount.toString()
-        }`,
+      const tokenLabel = `#${index + 1}`.dim;
+      const amountLabel = hideAmounts ? "***" : nft.amount.toString();
+      const name = truncateLabel(nft.tokenName, 22);
+      const tokenId = truncateLabel(nft.tokenSubID, 16);
+      pushCardRow(
+        display,
+        `${tokenLabel} ${name}  ID:${tokenId.dim}  x${amountLabel.bold}`,
       );
     }
   }
 
-  const footer = "".padEnd(70, "=");
-  display.push(`${footer.grey}`);
+  display.push(`${"╰".grey}${"─".repeat(BALANCE_CARD_WIDTH - 2).grey}${"╯".grey}`);
   return display.join("\n");
 };

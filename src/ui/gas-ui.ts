@@ -76,6 +76,22 @@ const getMatrixHeader = () => {
   return `${pad("Preset", 12).bold} ${pad("GasPrice", 12).bold} ${pad("MaxFee", 12).bold} ${pad("Tip", 12).bold} ${"Expected".bold}`;
 };
 
+const getOverallEstimatedFeeLabel = (
+  chainName: NetworkName,
+  quote: GasSelectionQuote,
+  gasEstimate?: bigint,
+) => {
+  const baseToken = NETWORK_CONFIG[chainName].baseToken;
+  const perGasUnit = quote.maxFeePerGas ?? quote.gasPrice;
+
+  if (!isDefined(perGasUnit) || !isDefined(gasEstimate)) {
+    return `${"Overall Estimated Fee:".bold} ${"n/a".grey}`;
+  }
+
+  const totalCost = perGasUnit * gasEstimate;
+  return `${"Overall Estimated Fee:".bold} ${`${formatNativeAmount(totalCost, baseToken.decimals)} ${baseToken.symbol}`.cyan} ${`(gas ${gasEstimate.toString()})`.dim}`;
+};
+
 export const runGasFeeSelectionPrompt = async (
   chainName: NetworkName,
   gasEstimate?: bigint,
@@ -103,6 +119,20 @@ export const runGasFeeSelectionPrompt = async (
     header: " ",
     message: "Gas Fee Speed / Price",
     choices: [
+      {
+        name: "header-overall",
+        message: getOverallEstimatedFeeLabel(
+          chainName,
+          quotes.recommended,
+          gasEstimate,
+        ),
+        role: "separator",
+      },
+      {
+        name: "header-overall-divider",
+        message: `${"-".repeat(66)}`.grey,
+        role: "separator",
+      },
       {
         name: "header-columns",
         message: getMatrixHeader().grey,
