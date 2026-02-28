@@ -1,7 +1,7 @@
 import { isDefined } from "@railgun-community/shared-models";
 import {
-  getCurrentEphemeralAddress,
-  ratchetEphemeralAddress,
+  EphemeralKeyManager,
+  fullWalletForID,
 } from "@railgun-community/wallet";
 import { RailgunTransaction } from "../models/transaction-models";
 import { EphemeralWalletCache } from "../models/wallet-models";
@@ -9,6 +9,8 @@ import configDefaults from "../config/config-defaults";
 import { saveKeychainFile } from "./wallet-cache";
 import { getCurrentRailgunID } from "./wallet-util";
 import { walletManager } from "./wallet-manager";
+import { getCurrentNetwork } from "../engine/engine";
+import { getChainForName } from "../network/network-util";
 
 const lower = (value: string) => value.toLowerCase();
 
@@ -32,11 +34,30 @@ const getOrCreateWalletCache = (walletID: string): EphemeralWalletCache => {
   return cacheMap[walletID];
 };
 
-const getHighestKnownIndex = (cache: EphemeralWalletCache) => {
-  return Object.keys(cache.addressByIndex)
-    .map((key) => Number(key))
-    .filter((index) => Number.isInteger(index) && index >= 0)
-    .reduce((highest, index) => Math.max(highest, index), -1);
+const getEphemeralKeyManager = (walletID: string, encryptionKey: string) => {
+  const railgunWallet = fullWalletForID(walletID);
+  return new EphemeralKeyManager(railgunWallet, encryptionKey);
+};
+
+const autoSyncEphemeralIndex = async (
+  manager: EphemeralKeyManager,
+) => {
+  const chainName = getCurrentNetwork();
+  const chain = getChainForName(chainName);
+  await manager.scanHistoryForEphemeralIndex(chain);
+};
+
+const cacheEphemeralState = (
+  walletID: string,
+  index: number,
+  address: string,
+) => {
+  const cache = getOrCreateWalletCache(walletID);
+  cache.currentIndex = index;
+  cache.addressByIndex[index] = address;
+  cache.lastKnownAddress = address;
+  cache.lastUpdated = Date.now();
+  persistKeychain();
 };
 
 const findKnownIndexForAddress = (
@@ -75,24 +96,17 @@ export const syncCurrentEphemeralWallet = async (
     return undefined;
   }
 
-  const currentAddress = await getCurrentEphemeralAddress(walletID, encryptionKey);
-  const cache = getOrCreateWalletCache(walletID);
+  const manager = getEphemeralKeyManager(walletID, encryptionKey);
+  await autoSyncEphemeralIndex(manager);
 
-  const knownIndex = findKnownIndexForAddress(cache, currentAddress);
-  if (isDefined(knownIndex)) {
-    cache.currentIndex = knownIndex;
-  } else if (isDefined(cache.addressByIndex[cache.currentIndex])) {
-    cache.currentIndex = getHighestKnownIndex(cache) + 1;
-  }
-
-  cache.addressByIndex[cache.currentIndex] = currentAddress;
-  cache.lastKnownAddress = currentAddress;
-  cache.lastUpdated = Date.now();
-  persistKeychain();
+  const currentAccount = await manager.getCurrentAccount();
+  const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex();
+  const currentAddress = currentAccount.address;
+  cacheEphemeralState(walletID, currentIndex, currentAddress);
 
   return {
     walletID,
-    currentIndex: cache.currentIndex,
+    currentIndex,
     currentAddress,
   };
 };
@@ -115,18 +129,10 @@ export const ratchetEphemeralWalletOnSuccess = async (
     return false;
   }
 
-  await ratchetEphemeralAddress(synced.walletID);
-  const nextAddress = await getCurrentEphemeralAddress(
-    synced.walletID,
-    encryptionKey,
-  );
-
-  const cache = getOrCreateWalletCache(synced.walletID);
-  cache.currentIndex = synced.currentIndex + 1;
-  cache.addressByIndex[cache.currentIndex] = nextAddress;
-  cache.lastKnownAddress = nextAddress;
-  cache.lastUpdated = Date.now();
-  persistKeychain();
+  const manager = getEphemeralKeyManager(synced.walletID, encryptionKey);
+  const nextAccount = await manager.getNextAccount();
+  const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex();
+  cacheEphemeralState(synced.walletID, nextIndex, nextAccount.address);
 
   return true;
 };
@@ -137,24 +143,42 @@ export const manualRatchetEphemeralWallet = async (encryptionKey: string) => {
     return undefined;
   }
 
-  await ratchetEphemeralAddress(synced.walletID);
-  const nextAddress = await getCurrentEphemeralAddress(
-    synced.walletID,
-    encryptionKey,
-  );
-
-  const cache = getOrCreateWalletCache(synced.walletID);
-  const nextIndex = synced.currentIndex + 1;
-  cache.currentIndex = nextIndex;
-  cache.addressByIndex[nextIndex] = nextAddress;
-  cache.lastKnownAddress = nextAddress;
-  cache.lastUpdated = Date.now();
-  persistKeychain();
+  const manager = getEphemeralKeyManager(synced.walletID, encryptionKey);
+  const nextAccount = await manager.getNextAccount();
+  const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex();
+  cacheEphemeralState(synced.walletID, nextIndex, nextAccount.address);
 
   return {
     walletID: synced.walletID,
     currentIndex: nextIndex,
-    currentAddress: nextAddress,
+    currentAddress: nextAccount.address,
+  };
+};
+
+export const setEphemeralWalletIndex = async (
+  encryptionKey: string,
+  index: number,
+) => {
+  if (!Number.isInteger(index) || index < 0) {
+    throw new Error("Ephemeral index must be a non-negative integer.");
+  }
+
+  const walletID = getCurrentRailgunID();
+  if (!isDefined(walletID)) {
+    return undefined;
+  }
+
+  const railgunWallet = fullWalletForID(walletID);
+  await railgunWallet.setEphemeralKeyIndex(index);
+
+  const manager = getEphemeralKeyManager(walletID, encryptionKey);
+  const currentAccount = await manager.getCurrentAccount();
+  cacheEphemeralState(walletID, index, currentAccount.address);
+
+  return {
+    walletID,
+    currentIndex: index,
+    currentAddress: currentAccount.address,
   };
 };
 

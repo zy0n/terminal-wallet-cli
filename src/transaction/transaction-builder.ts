@@ -32,6 +32,7 @@ import {
 } from "../wallet/public-utils";
 import {
   getCurrentRailgunAddress,
+  getCurrentRailgunID,
   getCurrentWalletGasBalance,
   getCurrentWalletName,
   getCurrentWalletPublicAddress,
@@ -1300,6 +1301,8 @@ export const runTransactionBuilder = async (
             const gasEstimate = await getShieldBaseTokenGasDetails(
               chainName,
               erc20AmountRecipients[0],
+              getCurrentRailgunID(),
+              password
             );
             header = await getDisplayTransactions(
               selections,
@@ -1608,6 +1611,8 @@ export const runTransactionBuilder = async (
               chainName,
               erc20AmountRecipients[0],
               privateGasEstimate,
+              getCurrentRailgunID(),
+              encryptionKey
             );
             break;
           }

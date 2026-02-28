@@ -6,8 +6,10 @@ import {
   TransactionGasDetails,
 } from "@railgun-community/shared-models";
 import {
+  EphemeralAccount,
   getShieldPrivateKeySignatureMessage,
   gasEstimateForShieldBaseToken,
+  getCurrentEphemeralWallet,
   populateShieldBaseToken,
 } from "@railgun-community/wallet";
 import { Wallet, formatUnits, keccak256 } from "ethers";
@@ -22,12 +24,19 @@ import { getCurrentShieldPrivateKey } from "../../wallet/public-utils";
 export const getShieldBaseTokenGasDetails = async (
   chainName: NetworkName,
   wrappedERC20Amount: RailgunERC20AmountRecipient,
+  railgunWalletID: string,
+  encryptionKey: string
 ): Promise<PrivateGasEstimate> => {
   const { shieldPrivateKey, fromWalletAddress } =
     await getCurrentShieldPrivateKey();
 
   const wrappedInfo = getWrappedTokenInfoForChain(chainName);
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
+  const ephemeralWallet = await getCurrentEphemeralWallet(
+    railgunWalletID,
+    encryptionKey,
+  );
+  const ephemeralAccount = new EphemeralAccount(ephemeralWallet);
 
   const { gasEstimate } = await gasEstimateForShieldBaseToken(
     txIDVersion,
@@ -36,6 +45,7 @@ export const getShieldBaseTokenGasDetails = async (
     shieldPrivateKey,
     wrappedERC20Amount,
     fromWalletAddress,
+    ephemeralAccount
   );
   const gasDetails = (await getPublicGasDetails(
     chainName,
@@ -61,10 +71,17 @@ export const getProvedShieldBaseTokenTransaction = async (
   chainName: NetworkName,
   wrappedERC20Amount: RailgunERC20AmountRecipient,
   privateGasEstimate: PrivateGasEstimate,
+  railgunWalletID: string,
+  encryptionKey: string
 ) => {
   const { shieldPrivateKey, fromWalletAddress } =
     await getCurrentShieldPrivateKey();
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
+  const ephemeralWallet = await getCurrentEphemeralWallet(
+    railgunWalletID,
+    encryptionKey,
+  );
+  const ephemeralAccount = new EphemeralAccount(ephemeralWallet);
 
   const { transaction } = await populateShieldBaseToken(
     txIDVersion,
@@ -73,6 +90,7 @@ export const getProvedShieldBaseTokenTransaction = async (
     shieldPrivateKey,
     wrappedERC20Amount,
     privateGasEstimate.estimatedGasDetails,
+    ephemeralAccount
   );
 
   // Public wallet to shield from.

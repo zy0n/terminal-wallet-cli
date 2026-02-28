@@ -4,10 +4,15 @@ import {
   getKnownEphemeralAddresses,
   getKnownEphemeralIndexForAddress,
   manualRatchetEphemeralWallet,
+  setEphemeralWalletIndex,
   syncCurrentEphemeralWallet,
 } from "../wallet/ephemeral-wallet-manager";
 import { getSaltedPassword } from "../wallet/wallet-password";
-import { confirmPromptCatch, confirmPromptCatchRetry } from "./confirm-ui";
+import {
+  confirmPrompt,
+  confirmPromptCatch,
+  confirmPromptCatchRetry,
+} from "./confirm-ui";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Select, Input } = require("enquirer");
@@ -73,7 +78,8 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
     message: "Ephemeral Wallet Tools",
     choices: [
       { name: "sync-current", message: "Sync Current Ephemeral Address" },
-      { name: "manual-ratchet", message: "Manual Ratchet (index + 1)" },
+      { name: "manual-ratchet", message: "Ratchet to Next Index" },
+      { name: "set-index", message: "Set Specific Ephemeral Index" },
       { name: "show-known", message: "Show Known Address/Index History" },
       { name: "lookup-index", message: "Lookup Index by Address" },
       { name: "exit-menu", message: "Go Back".grey },
@@ -117,6 +123,55 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
             .green,
         );
       }
+      await confirmPromptCatchRetry("");
+      return runEphemeralManagerPrompt();
+    }
+    case "set-index": {
+      const encryptionKey = await getSaltedPassword();
+      if (!isDefined(encryptionKey)) {
+        return runEphemeralManagerPrompt();
+      }
+
+      const indexPrompt = new Input({
+        header: " ",
+        message: "Enter ephemeral index (0 or greater)",
+        validate: (value: string) => {
+          const parsed = Number(value);
+          return Number.isInteger(parsed) && parsed >= 0;
+        },
+      });
+
+      const indexInput = (await indexPrompt.run().catch(confirmPromptCatch)) as
+        | string
+        | undefined;
+      if (!isDefined(indexInput)) {
+        return runEphemeralManagerPrompt();
+      }
+
+      const index = Number(indexInput);
+      const confirmSetIndex = await confirmPrompt(
+        `Set ephemeral index to ${index}?`,
+        { initial: false },
+      );
+      if (!confirmSetIndex) {
+        return runEphemeralManagerPrompt();
+      }
+
+      const updated = await setEphemeralWalletIndex(encryptionKey, index).catch(
+        (err) => {
+          console.log(`Failed to set index: ${(err as Error).message}`.yellow);
+          return undefined;
+        },
+      );
+
+      if (!isDefined(updated)) {
+        console.log("Failed to set ephemeral index.".yellow);
+      } else {
+        console.log(
+          `Set index ${updated.currentIndex}: ${updated.currentAddress}`.green,
+        );
+      }
+
       await confirmPromptCatchRetry("");
       return runEphemeralManagerPrompt();
     }
