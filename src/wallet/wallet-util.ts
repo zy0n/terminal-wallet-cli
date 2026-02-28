@@ -11,6 +11,10 @@ export const isMenuResponsive = () => {
   return walletManager.responsiveMenu;
 };
 
+export const shouldHidePrivateInfo = () => {
+  return walletManager.hidePrivateInfo;
+};
+
 export const shouldShowSender = () => {
   return walletManager.showSenderAddress;
 }
@@ -26,6 +30,13 @@ export const toggleResponsiveMenu = () => {
   walletManager.responsiveMenu = !walletManager.responsiveMenu;
   const { keyChainPath } = configDefaults.engine;
   walletManager.keyChain.responsiveMenu = walletManager.responsiveMenu;
+  saveKeychainFile(walletManager.keyChain, keyChainPath);
+};
+
+export const toggleHidePrivateInfo = () => {
+  walletManager.hidePrivateInfo = !walletManager.hidePrivateInfo;
+  const { keyChainPath } = configDefaults.engine;
+  walletManager.keyChain.hidePrivateInfo = walletManager.hidePrivateInfo;
   saveKeychainFile(walletManager.keyChain, keyChainPath);
 };
 

@@ -29,6 +29,7 @@ export type WalletManager = {
   menuCallback: () => Promise<void>;
   displayPrivate: boolean;
   responsiveMenu: boolean;
+  hidePrivateInfo: boolean;
   showSenderAddress: boolean;
 };
 export const walletManager: WalletManager = {
@@ -38,6 +39,7 @@ export const walletManager: WalletManager = {
   menuLoaded: false,
   displayPrivate: true,
   responsiveMenu: true,
+  hidePrivateInfo: false,
   showSenderAddress: true,
 } as any;
 

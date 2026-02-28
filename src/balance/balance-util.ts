@@ -36,6 +36,43 @@ import configDefaults from "../config/config-defaults";
 import { walletManager } from "../wallet/wallet-manager";
 import { walletForID } from "@railgun-community/wallet";
 
+let lastPOIProgressPercent = 0;
+let lastPOIProgressTimestamp = 0;
+
+const getShieldPendingETA = (): string => {
+  const poiEvent = walletManager.poiProgressEvent;
+  if (!isDefined(poiEvent) || !isDefined(poiEvent.progress)) {
+    return "Expected: ~2-10m";
+  }
+
+  const now = Date.now();
+  const currentProgress = Math.max(0, Math.min(100, poiEvent.progress));
+  const progressDelta = currentProgress - lastPOIProgressPercent;
+  const timeDeltaMs = now - lastPOIProgressTimestamp;
+
+  let etaString = "Expected: ~2-10m";
+  if (progressDelta > 0 && timeDeltaMs > 15_000 && currentProgress < 100) {
+    const msPerPercent = timeDeltaMs / progressDelta;
+    const remainingPercent = 100 - currentProgress;
+    const etaMs = msPerPercent * remainingPercent;
+    const etaMinutes = Math.ceil(etaMs / 60_000);
+    if (etaMinutes <= 1) {
+      etaString = "Expected: <1m";
+    } else if (etaMinutes < 120) {
+      etaString = `Expected: ~${etaMinutes}m`;
+    } else {
+      etaString = "Expected: >2h";
+    }
+  } else if (currentProgress >= 99.9) {
+    etaString = "Expected: finalizing";
+  }
+
+  lastPOIProgressPercent = currentProgress;
+  lastPOIProgressTimestamp = now;
+
+  return etaString;
+};
+
 type PrivateNFTDisplayBalance = {
   tokenAddress: string;
   tokenSubID: string;
@@ -320,9 +357,13 @@ export const getPrivateDisplayBalances = async (
   const header = `${CHAIN_NAME.green} ${
     isPrivate ? bucketType.green : ""
   } ${balanceType} BALANCES`;
+  const shieldPendingETA =
+    isPrivate && bucketType === RailgunWalletBalanceBucket.ShieldPending
+      ? ` ${`(${getShieldPendingETA()})`.dim}`
+      : "";
   const headLen = stripColors(header).length;
   display.push("");
-  const headerLine = `${header}`;
+  const headerLine = `${header}${shieldPendingETA}`;
   const headerPad = "".padEnd(70 - headLen, "=");
   display.push(`${headerLine} ${headerPad.grey}`);
 

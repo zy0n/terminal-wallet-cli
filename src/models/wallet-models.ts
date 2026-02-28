@@ -60,6 +60,7 @@ export type KeychainFile = {
   cachedTokenInfo?: TokenDatabaseMap;
   displayPrivate?: boolean;
   responsiveMenu?: boolean;
+  hidePrivateInfo?: boolean;
   customProviders?: CustomProviderMap;
   showSenderAddress?: boolean;
 };

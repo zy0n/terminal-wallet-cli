@@ -26,6 +26,8 @@ import {
   toggleResponsiveMenu,
   shouldShowSender,
   toggleShouldShowSender,
+  shouldHidePrivateInfo,
+  toggleHidePrivateInfo,
 } from "../wallet/wallet-util";
 import { runTransactionBuilder } from "../transaction/transaction-builder";
 
@@ -112,6 +114,8 @@ const shortAddress = (address?: string) => {
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
 };
 
+const hiddenAddress = () => "••••••••...••••••";
+
 const buildMenuSection = (title: string, rows: string[]): string[] => {
   return [title, ...rows, ""];
 };
@@ -138,6 +142,7 @@ const HOTKEY_TO_CHOICE: Record<string, string> = {
   q: "reset-broadcasters",
   e: "edit-rpc",
   l: "view-runtime-logs",
+  v: "toggle-private-info",
   o: "toggle-responsive",
   x: "exit",
 };
@@ -414,6 +419,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
   return new Select({
     logoHeader: RAILGUN_HEADER,
     header: async () => {
+      const hidePrivateInfo = shouldHidePrivateInfo();
       const broadcasterStatus = `Broadcasters: ${
         isWakuConnected()
           ? "Available".dim.green.bold
@@ -429,13 +435,25 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         ? `#${ephemeralState.currentIndex} · ${ephemeralState.knownCount} known`
         : "not synced";
 
-      const { rows } = process.stdout;
+      const walletIdentity = hidePrivateInfo ? "Hidden".dim : walletName.cyan.bold;
+      const privateAddress = hidePrivateInfo
+        ? hiddenAddress().grey
+        : shortAddress(currentRailgunAddress).grey;
+      const publicAddress = hidePrivateInfo
+        ? hiddenAddress().grey
+        : shortAddress(currentPublicAddress).grey;
+      const shownEphemeralAddress = hidePrivateInfo
+        ? hiddenAddress().grey
+        : ephemeralAddress.grey;
+      const shownEphemeralMeta = hidePrivateInfo
+        ? "(hidden)".dim
+        : `(${ephemeralMeta})`.dim;
 
       const walletInfoString = [
-        `${"┌─ Wallet".grey} ${walletName.cyan.bold}`,
-        `${"│".grey} Private   ${shortAddress(currentRailgunAddress).grey}`,
-        `${"│".grey} Public    ${shortAddress(currentPublicAddress).grey}`,
-        `${"│".grey} Ephemeral ${ephemeralAddress.grey} ${`(${ephemeralMeta})`.dim}`,
+        `${"┌─ Wallet".grey} ${walletIdentity}`,
+        `${"│".grey} Private   ${privateAddress}`,
+        `${"│".grey} Public    ${publicAddress}`,
+        `${"│".grey} Ephemeral ${shownEphemeralAddress} ${shownEphemeralMeta}`,
         `${"└─".grey}`,
       ].join("\n");
 
@@ -446,22 +464,37 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       const buckets = Object.keys(RailgunWalletBalanceBucket);
 
       let balanceBlock = "";
-      for (const bucket of buckets) {
-        const output = await getPrivateDisplayBalances(
-          networkName,
-          bucket as RailgunWalletBalanceBucket,
-        ).then((v) => {
-          return v;
-        });
+      if (hidePrivateInfo) {
+        balanceBlock = `${"PRIVATE INFO HIDDEN".yellow.bold}\n${
+          "Press [V] to reveal addresses and balances.".grey
+        }\n`;
+      } else {
+        for (const bucket of buckets) {
+          const output = await getPrivateDisplayBalances(
+            networkName,
+            bucket as RailgunWalletBalanceBucket,
+          ).then((v) => {
+            return v;
+          });
 
-        const outputstring = `${output}`;
-        balanceBlock += `${outputstring}`;
+          const outputstring = `${output}`;
+          balanceBlock += `${outputstring}`;
+        }
       }
+
+      const displayStatus = `${"Display".grey}: Privacy ${
+        hidePrivateInfo ? "Hidden".yellow : "Visible".green
+      } • Sender ${
+        shouldShowSender() ? "Visible".green : "Hidden".yellow
+      } • Refresh ${
+        isMenuResponsive() ? "Responsive".green : "Manual".yellow
+      }`;
 
       return [
         "",
         walletInfoString,
         broadcasterStatus,
+        displayStatus,
         balanceBlock,
         `${
           !isMenuResponsive()
@@ -580,7 +613,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       const rightSections = [
         ...buildMenuSection(
           `${">>".grey} ${"Utilities".grey.bold} ${"<<".grey}`,
-          [...visibleWithHotkeys.slice(14, 26), "", visibleWithHotkeys[26]],
+          [...visibleWithHotkeys.slice(14, 27), "", visibleWithHotkeys[27]],
         ),
       ];
 
@@ -748,6 +781,12 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       { name: "edit-rpc", message: "Edit RPC Providers" },
       { name: "view-runtime-logs", message: "View Runtime Logs" },
       {
+        name: "toggle-private-info",
+        message: `${
+          shouldHidePrivateInfo() ? "Show" : "Hide"
+        } Hidden Private Info`,
+      },
+      {
         name: "toggle-responsive",
         message: `${isMenuResponsive() ? "Disable" : "Enable"} Responsive Menu`,
         hint: isMenuResponsive() ? "(experiencing flicker?)" : "",
@@ -828,6 +867,7 @@ export const runMainMenu = async () => {
       case "toggle-balance":
       case "reset-broadcasters":
       case "toggle-responsive":
+      case "toggle-private-info":
       case "refresh-balances":
         lastMenuSelection = menuSelection;
         break;
@@ -982,6 +1022,10 @@ export const runMainMenu = async () => {
     }
     case "toggle-responsive": {
       toggleResponsiveMenu();
+      break;
+    }
+    case "toggle-private-info": {
+      toggleHidePrivateInfo();
       break;
     }
     case "launch-mech": {
