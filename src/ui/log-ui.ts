@@ -46,13 +46,44 @@ const normalizeMessage = (input: unknown): string => {
   return `${oneLine.slice(0, MAX_LINE_LEN - 1)}…`;
 };
 
+const getPOIStatusFromRawLog = (raw: string): Optional<string> => {
+  const normalizedRaw = raw.replace(/\s+/g, " ").trim();
+
+  const detailedMatch = normalizedRaw.match(
+    /POI Status:\s*([^|]+)\|\s*TX:\s*(\d+\/\d+)\s*\|\s*Progress:\s*([\d.]+)/i,
+  );
+  if (detailedMatch) {
+    const [, status, txInfo, progress] = detailedMatch;
+    const txidMatch = normalizedRaw.match(/TxID:\s*([a-f0-9]{64})/i);
+    const txidSuffix = txidMatch
+      ? ` • TxID ${txidMatch[1].slice(0, 10)}...${txidMatch[1].slice(-8)}`
+      : "";
+    return `POI ${status.trim()} • TX ${txInfo.trim()} • ${progress.trim()}%${txidSuffix}`;
+  }
+
+  const legacyProgressMatch = normalizedRaw.match(/wallet poi proof progress:\s*(\d+)/i);
+  if (legacyProgressMatch) {
+    return `POI InProgress • ${legacyProgressMatch[1]}%`;
+  }
+
+  return undefined;
+};
+
 const shouldSuppressAsNoise = (message: string, level: UILogLevel): boolean => {
   if (level === "error") return false;
   return NOISE_PATTERNS.some((pattern) => pattern.test(message));
 };
 
 export const pushUILog = (input: unknown, level: UILogLevel = "log") => {
-  const message = normalizeMessage(input);
+  const rawText =
+    typeof input === "string"
+      ? input
+      : input instanceof Error
+        ? input.message
+        : JSON.stringify(input);
+
+  const poiStatus = getPOIStatusFromRawLog(rawText);
+  const message = poiStatus ?? normalizeMessage(input);
   if (!message.length) return;
 
   if (shouldSuppressAsNoise(message, level)) {

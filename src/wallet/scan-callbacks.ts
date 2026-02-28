@@ -1,6 +1,5 @@
 import {
   MerkletreeScanUpdateEvent,
-  POIProofEventStatus,
   POIProofProgressEvent,
   RailgunBalancesEvent,
   delay,
@@ -15,6 +14,7 @@ import { ChainIDToNameMap } from "../models/network-models";
 import { getCurrentNetwork, rescanBalances } from "../engine/engine";
 import { walletManager } from "./wallet-manager";
 import { setStatusText } from "../ui/status-ui";
+import { pushUILog } from "../ui/log-ui";
 
 export const merkelTreeScanCallback = async (
   callbackInfo: MerkletreeScanUpdateEvent,
@@ -78,20 +78,26 @@ export const latestBalancePoller = async (pollingInterval: number) => {
 
 export const getPOIStatusString = () => {
   const event = walletManager.poiProgressEvent;
-  const status = `POI Status: ${event.status} | TX: ${event.index}/${event.totalCount
-    } | Progress: ${event.progress.toFixed(2)}\nTxID: ${event.txid
-    }\nPOI List ID: ${event.listKey}`;
+  const shortTxID =
+    event.txid.length > 20
+      ? `${event.txid.slice(0, 10)}...${event.txid.slice(-8)}`
+      : event.txid;
+  const shortListID =
+    event.listKey.length > 20
+      ? `${event.listKey.slice(0, 10)}...${event.listKey.slice(-8)}`
+      : event.listKey;
+
+  const status = `POI Status: ${event.status} | TX: ${event.index}/${event.totalCount} | Progress: ${event.progress.toFixed(
+    2,
+  )}% | TxID: ${shortTxID} | List: ${shortListID}`;
 
   return status;
 };
 
 export const poiScanCallback = async (poiProgressEvent: POIProofProgressEvent) => {
   walletManager.poiProgressEvent = poiProgressEvent;
-
-  if (poiProgressEvent.status === POIProofEventStatus.InProgress) {
-    const poiStatus = getPOIStatusString();
-    setStatusText(poiStatus, 15000, true);
-  }
+  const poiStatus = getPOIStatusString();
+  pushUILog(poiStatus);
 };
 
 export const batchListCallback = async (batchListProgressEvent: BatchListUpdateEvent) =>{
