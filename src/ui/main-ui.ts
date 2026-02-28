@@ -116,6 +116,35 @@ const shortAddress = (address?: string) => {
 
 const hiddenAddress = () => "••••••••...••••••";
 
+const pseudoHexFromSeed = (seed: string, length: number): string => {
+  const alphabet = "0123456789abcdef";
+  let state = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    state = (state * 131 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  let output = "";
+  for (let index = 0; index < length; index += 1) {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    output += alphabet[state & 0x0f];
+  }
+  return output;
+};
+
+const getFakeAddress = (realAddress?: string): string => {
+  if (!isDefined(realAddress) || realAddress.length < 8) {
+    return "0x" + pseudoHexFromSeed("railgun-hidden", 40);
+  }
+  return "0x" + pseudoHexFromSeed(realAddress.toLowerCase(), 40);
+};
+
+const getFakePrivateAddress = (realAddress?: string): string => {
+  const seed = isDefined(realAddress) && realAddress.length >= 8
+    ? realAddress.toLowerCase()
+    : "railgun-hidden-private";
+  return "0zk1" + pseudoHexFromSeed(seed, 40);
+};
+
 const buildMenuSection = (title: string, rows: string[]): string[] => {
   return [title, ...rows, ""];
 };
@@ -437,16 +466,16 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
 
       const walletIdentity = hidePrivateInfo ? "Hidden".dim : walletName.cyan.bold;
       const privateAddress = hidePrivateInfo
-        ? hiddenAddress().grey
+        ? shortAddress(getFakePrivateAddress(currentRailgunAddress)).grey
         : shortAddress(currentRailgunAddress).grey;
       const publicAddress = hidePrivateInfo
-        ? hiddenAddress().grey
+        ? shortAddress(getFakeAddress(currentPublicAddress)).grey
         : shortAddress(currentPublicAddress).grey;
       const shownEphemeralAddress = hidePrivateInfo
-        ? hiddenAddress().grey
+        ? shortAddress(getFakeAddress(ephemeralState?.currentAddress)).grey
         : ephemeralAddress.grey;
       const shownEphemeralMeta = hidePrivateInfo
-        ? "(hidden)".dim
+        ? "(masked)".dim
         : `(${ephemeralMeta})`.dim;
 
       const walletInfoString = [
@@ -465,21 +494,23 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
 
       let balanceBlock = "";
       if (hidePrivateInfo) {
-        balanceBlock = `${"PRIVATE INFO HIDDEN".yellow.bold}\n${
-          "Press [V] to reveal addresses and balances.".grey
+        balanceBlock += `${"PRIVATE INFO HIDDEN".yellow.bold}\n${
+          "Showing tokens with masked balances. Press [V] to reveal values."
+            .grey
         }\n`;
-      } else {
-        for (const bucket of buckets) {
-          const output = await getPrivateDisplayBalances(
-            networkName,
-            bucket as RailgunWalletBalanceBucket,
-          ).then((v) => {
-            return v;
-          });
+      }
 
-          const outputstring = `${output}`;
-          balanceBlock += `${outputstring}`;
-        }
+      for (const bucket of buckets) {
+        const output = await getPrivateDisplayBalances(
+          networkName,
+          bucket as RailgunWalletBalanceBucket,
+          hidePrivateInfo,
+        ).then((v) => {
+          return v;
+        });
+
+        const outputstring = `${output}`;
+        balanceBlock += `${outputstring}`;
       }
 
       const displayStatus = `${"Display".grey}: Privacy ${

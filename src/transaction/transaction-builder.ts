@@ -1269,7 +1269,10 @@ export const runTransactionBuilder = async (
           transactionType === RailgunTransaction.Public0XSwap;
 
         if (needsImmediateGasEstimate) {
-          await runGasFeeSelectionPrompt(chainName).catch((err) => {
+          await runGasFeeSelectionPrompt(
+            chainName,
+            privateGasEstimate?.estimatedGasDetails.gasEstimate,
+          ).catch((err) => {
             console.log((err as Error).message);
           });
         }
@@ -1479,7 +1482,10 @@ export const runTransactionBuilder = async (
           _selfSignerInfo = await getSelfSignerWalletPrompt();
         }
 
-        await runGasFeeSelectionPrompt(chainName).catch((err) => {
+        await runGasFeeSelectionPrompt(
+          chainName,
+          privateGasEstimate?.estimatedGasDetails.gasEstimate,
+        ).catch((err) => {
           console.log((err as Error).message);
         });
 

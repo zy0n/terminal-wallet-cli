@@ -2,6 +2,8 @@ import {
   NETWORK_CONFIG,
   ChainType,
   NetworkName,
+  POI_SHIELD_PENDING_SEC,
+  POI_SHIELD_PENDING_SEC_TEST_NET,
   RailgunWalletBalanceBucket,
   TXIDVersion,
   isDefined,
@@ -34,43 +36,165 @@ import { readablePrecision } from "../util/util";
 import { stripColors } from "colors";
 import configDefaults from "../config/config-defaults";
 import { walletManager } from "../wallet/wallet-manager";
-import { walletForID } from "@railgun-community/wallet";
+import { getWalletTransactionHistory, walletForID } from "@railgun-community/wallet";
 
-let lastPOIProgressPercent = 0;
-let lastPOIProgressTimestamp = 0;
+type ShieldPendingTimeline = {
+  etaText: string;
+  detailLines: string[];
+};
 
-const getShieldPendingETA = (): string => {
-  const poiEvent = walletManager.poiProgressEvent;
-  if (!isDefined(poiEvent) || !isDefined(poiEvent.progress)) {
-    return "Expected: ~2-10m";
+type ShieldPendingTimelineCacheEntry = {
+  timeline: ShieldPendingTimeline;
+  expiresAt: number;
+};
+
+const shieldPendingTimelineCache: Map<string, ShieldPendingTimelineCacheEntry> =
+  new Map();
+
+const SHIELD_PENDING_TIMELINE_CACHE_MS = 30_000;
+
+const getShieldPendingWindowSec = (chainName: NetworkName): number => {
+  return NETWORK_CONFIG[chainName].isTestnet
+    ? POI_SHIELD_PENDING_SEC_TEST_NET
+    : POI_SHIELD_PENDING_SEC;
+};
+
+const formatRemainingDuration = (remainingSec: number): string => {
+  if (remainingSec <= 60) {
+    return "<1m";
   }
 
+  const totalMinutes = Math.ceil(remainingSec / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours === 0) {
+    return `${totalMinutes}m`;
+  }
+  if (minutes === 0) {
+    return `${hours}h`;
+  }
+  return `${hours}h ${minutes}m`;
+};
+
+const getShieldPendingTimelineFromHistory = async (
+  chainName: NetworkName,
+): Promise<ShieldPendingTimeline> => {
+  const chain = getChainForName(chainName);
+  const railgunWalletID = getCurrentRailgunID();
+  const cacheKey = `${chain.type}:${chain.id}:${railgunWalletID}`;
   const now = Date.now();
-  const currentProgress = Math.max(0, Math.min(100, poiEvent.progress));
-  const progressDelta = currentProgress - lastPOIProgressPercent;
-  const timeDeltaMs = now - lastPOIProgressTimestamp;
 
-  let etaString = "Expected: ~2-10m";
-  if (progressDelta > 0 && timeDeltaMs > 15_000 && currentProgress < 100) {
-    const msPerPercent = timeDeltaMs / progressDelta;
-    const remainingPercent = 100 - currentProgress;
-    const etaMs = msPerPercent * remainingPercent;
-    const etaMinutes = Math.ceil(etaMs / 60_000);
-    if (etaMinutes <= 1) {
-      etaString = "Expected: <1m";
-    } else if (etaMinutes < 120) {
-      etaString = `Expected: ~${etaMinutes}m`;
-    } else {
-      etaString = "Expected: >2h";
-    }
-  } else if (currentProgress >= 99.9) {
-    etaString = "Expected: finalizing";
+  const cached = shieldPendingTimelineCache.get(cacheKey);
+  if (isDefined(cached) && cached.expiresAt > now) {
+    return cached.timeline;
   }
 
-  lastPOIProgressPercent = currentProgress;
-  lastPOIProgressTimestamp = now;
+  const pendingWindowSec = getShieldPendingWindowSec(chainName);
+  const nowSec = Math.floor(now / 1000);
+  const history = await getWalletTransactionHistory(chain, railgunWalletID, undefined);
 
-  return etaString;
+  type Cohort = {
+    remainingSec: number;
+    notes: number;
+    relayedNotes: number;
+  };
+
+  const cohortsByMinute: Map<number, Cohort> = new Map();
+  let totalPendingNotes = 0;
+
+  for (const item of history) {
+    const txTimestampSec = item.timestamp;
+    if (!isDefined(txTimestampSec) || txTimestampSec <= 0) {
+      continue;
+    }
+
+    const pendingERC20Receives = item.receiveERC20Amounts.filter(
+      (receiveAmount) =>
+        receiveAmount.balanceBucket === RailgunWalletBalanceBucket.ShieldPending,
+    );
+    const pendingNFTReceives = item.receiveNFTAmounts.filter(
+      (receiveAmount) =>
+        receiveAmount.balanceBucket === RailgunWalletBalanceBucket.ShieldPending,
+    );
+
+    const pendingNoteCount = pendingERC20Receives.length + pendingNFTReceives.length;
+    if (pendingNoteCount === 0) {
+      continue;
+    }
+
+    const relayedNotes =
+      pendingERC20Receives.filter((receiveAmount) => {
+        if (!isDefined(receiveAmount.shieldFee)) {
+          return false;
+        }
+        return BigInt(receiveAmount.shieldFee) > 0n;
+      }).length +
+      pendingNFTReceives.filter((receiveAmount) => {
+        if (!isDefined(receiveAmount.shieldFee)) {
+          return false;
+        }
+        return BigInt(receiveAmount.shieldFee) > 0n;
+      }).length;
+
+    const unlockTimestampSec = txTimestampSec + pendingWindowSec;
+    const remainingSec = unlockTimestampSec - nowSec;
+    if (remainingSec <= 0) {
+      continue;
+    }
+
+    totalPendingNotes += pendingNoteCount;
+
+    const minuteCohortKey = Math.ceil(remainingSec / 60);
+    const existingCohort = cohortsByMinute.get(minuteCohortKey);
+    if (isDefined(existingCohort)) {
+      existingCohort.notes += pendingNoteCount;
+      existingCohort.relayedNotes += relayedNotes;
+      continue;
+    }
+
+    cohortsByMinute.set(minuteCohortKey, {
+      remainingSec,
+      notes: pendingNoteCount,
+      relayedNotes,
+    });
+  }
+
+  const sortedCohorts = [...cohortsByMinute.values()].sort(
+    (a, b) => a.remainingSec - b.remainingSec,
+  );
+
+  const timeline: ShieldPendingTimeline =
+    sortedCohorts.length === 0
+      ? {
+          etaText: "Expected: settling",
+          detailLines: [],
+        }
+      : {
+          etaText: `Expected: ${formatRemainingDuration(sortedCohorts[0].remainingSec)}-${formatRemainingDuration(sortedCohorts[sortedCohorts.length - 1].remainingSec)}`,
+          detailLines: sortedCohorts.slice(0, 3).map((cohort) => {
+            const directNotes = cohort.notes - cohort.relayedNotes;
+            const noteLabel = cohort.notes === 1 ? "note" : "notes";
+            const modeLabel =
+              cohort.relayedNotes > 0 && directNotes > 0
+                ? "mixed"
+                : cohort.relayedNotes > 0
+                  ? "relay"
+                  : "direct";
+            return `⏱ ${cohort.notes} ${noteLabel} unlock in ${formatRemainingDuration(cohort.remainingSec)} (${modeLabel})`;
+          }),
+        };
+
+  if (totalPendingNotes > 0 && timeline.detailLines.length > 0) {
+    timeline.detailLines.unshift(`Pending notes: ${totalPendingNotes}`);
+  }
+
+  shieldPendingTimelineCache.set(cacheKey, {
+    timeline,
+    expiresAt: now + SHIELD_PENDING_TIMELINE_CACHE_MS,
+  });
+
+  return timeline;
 };
 
 type PrivateNFTDisplayBalance = {
@@ -320,8 +444,11 @@ export const getDisplayStringFromBalance = (
   balance: RailgunDisplayBalance,
   maxBalanceLength: number,
   maxSymbolLength: number,
+  hideAmounts = false,
 ) => {
-  const balanceString = formatUnits(balance.amount, balance.decimals);
+  const balanceString = hideAmounts
+    ? "***"
+    : formatUnits(balance.amount, balance.decimals);
 
   const balanceDisplayString = `${
     balanceString.padEnd(maxBalanceLength, "0").bold
@@ -332,6 +459,7 @@ export const getDisplayStringFromBalance = (
 export const getPrivateDisplayBalances = async (
   chainName: NetworkName,
   bucketType: RailgunWalletBalanceBucket,
+  hideAmounts = false,
 ) => {
   const CHAIN_NAME = configDefaults.networkConfig[chainName].name.toUpperCase();
   const display: string[] = [];
@@ -357,15 +485,28 @@ export const getPrivateDisplayBalances = async (
   const header = `${CHAIN_NAME.green} ${
     isPrivate ? bucketType.green : ""
   } ${balanceType} BALANCES`;
-  const shieldPendingETA =
+  const shieldPendingTimeline =
     isPrivate && bucketType === RailgunWalletBalanceBucket.ShieldPending
-      ? ` ${`(${getShieldPendingETA()})`.dim}`
-      : "";
+      ? await getShieldPendingTimelineFromHistory(chainName).catch(() => ({
+          etaText: "Expected: unavailable",
+          detailLines: [],
+        }))
+      : undefined;
+  const shieldPendingETA = isDefined(shieldPendingTimeline)
+    ? ` ${`(${shieldPendingTimeline.etaText})`.dim}`
+    : "";
   const headLen = stripColors(header).length;
   display.push("");
   const headerLine = `${header}${shieldPendingETA}`;
   const headerPad = "".padEnd(70 - headLen, "=");
   display.push(`${headerLine} ${headerPad.grey}`);
+
+  if (isDefined(shieldPendingTimeline) && shieldPendingTimeline.detailLines.length > 0) {
+    for (const line of shieldPendingTimeline.detailLines) {
+      display.push(`${line}`.dim);
+    }
+    display.push("");
+  }
 
   if (balances.length === 0 && nftBalances.length === 0) {
     const balanceHeader = walletManager.menuLoaded ? "NO" : "LOADING";
@@ -375,12 +516,13 @@ export const getPrivateDisplayBalances = async (
   }
 
   const maxSymbolLength = getMaxSymbolLengthFromBalances(balances);
-  const maxBalanceLength = getMaxBalanceLength(balances);
+  const maxBalanceLength = hideAmounts ? 3 : getMaxBalanceLength(balances);
   for (const bal of balances) {
     const balanceDisplayString = getDisplayStringFromBalance(
       bal,
       maxBalanceLength,
       maxSymbolLength,
+      hideAmounts,
     );
     display.push(balanceDisplayString);
   }
@@ -392,7 +534,9 @@ export const getPrivateDisplayBalances = async (
     display.push(`${"NFTs".cyan.bold}:`);
     for (const [index, nft] of nftBalances.entries()) {
       display.push(
-        `  [${index}] ${nft.tokenName} (ID: ${nft.tokenSubID}) x${nft.amount.toString()}`,
+        `  [${index}] ${nft.tokenName} (ID: ${nft.tokenSubID}) x${
+          hideAmounts ? "***" : nft.amount.toString()
+        }`,
       );
     }
   }
