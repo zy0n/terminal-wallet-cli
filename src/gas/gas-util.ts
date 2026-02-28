@@ -106,6 +106,13 @@ export const getPublicGasDetails = async (
 ) => {
   const feeData = await getFeeDetailsForChain(chainName);
   const { gasPrice, maxFeePerGas, maxPriorityFeePerGas } = feeData;
+
+  const normalizedMaxFeePerGas = maxFeePerGas ?? gasPrice ?? 0n;
+  const normalizedMaxPriorityFeePerGas =
+    (maxPriorityFeePerGas ?? 0n) > normalizedMaxFeePerGas
+      ? normalizedMaxFeePerGas
+      : (maxPriorityFeePerGas ?? 0n);
+
   let gasDetailsInfo: {
     gasPrice?: bigint;
     maxFeePerGas?: bigint;
@@ -123,8 +130,8 @@ export const getPublicGasDetails = async (
     }
     case EVMGasType.Type2: {
       gasDetailsInfo = {
-        maxFeePerGas: maxFeePerGas ?? gasPrice ?? 0n,
-        maxPriorityFeePerGas: maxPriorityFeePerGas ?? 0n,
+        maxFeePerGas: normalizedMaxFeePerGas,
+        maxPriorityFeePerGas: normalizedMaxPriorityFeePerGas,
       };
       break;
     }

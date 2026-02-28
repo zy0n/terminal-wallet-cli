@@ -86,7 +86,7 @@ export const startWakuClient = async (chainName: NetworkName) => {
   }
   const chain = getChainForName(chainName);
   const peerOverrides = remoteConfig.additionalDirectPeers ?? [];
-  broadcasterOptions.additionalDirectPeers = peerOverrides;
+  // broadcasterOptions.additionalDirectPeers = peerOverrides;
   broadcasterOptions.pubSubTopic = remoteConfig.wakuPubSubTopic;
   if(isDefined(remoteConfig.trustedFeeSigner)){
     broadcasterOptions.trustedFeeSigner = remoteConfig.trustedFeeSigner;

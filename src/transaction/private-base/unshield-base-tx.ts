@@ -1,4 +1,5 @@
 import {
+  EVMGasType,
   NetworkName,
   RailgunERC20Amount,
   RailgunERC20AmountRecipient,
@@ -168,7 +169,7 @@ export const getProvedUnshieldBaseTokenTransaction = async (
         overallBatchMinGasPrice,
         estimatedGasDetails,
       );
-
+      // transaction.type = EVMGasType.Type4;
     return { transaction, nullifiers, preTransactionPOIsPerTxidLeafPerList };
   } catch (err) {
     const error = err as Error;

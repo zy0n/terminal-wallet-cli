@@ -410,6 +410,27 @@ export const sendBroadcastedTransaction = async (
       .yellow,
   );
   const sendResult = await finalTransaction.send().catch(err=>{
+    const causeMessage = err?.cause?.message ?? "";
+    if (
+      typeof causeMessage === "string" &&
+      causeMessage
+        .toLowerCase()
+        .includes("max fee per gas less than block base fee")
+    ) {
+      console.log(
+        "Gas moved above the prepared max fee. Re-run Fee Options to refresh gas, then Generate Proof again and submit.".yellow,
+      );
+    }
+    if (
+      typeof causeMessage === "string" &&
+      causeMessage
+        .toLowerCase()
+        .includes("max priority fee per gas higher than max fee per gas")
+    ) {
+      console.log(
+        "Fee tuple became invalid (priority > max fee). Re-run Fee Options, regenerate proof, and submit again.".yellow,
+      );
+    }
     if(isDefined(err.cause)){
       console.log(err.cause.message);
     }

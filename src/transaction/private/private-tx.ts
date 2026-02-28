@@ -44,8 +44,24 @@ export const getOriginalGasDetailsForPrivateTransaction = async (
     const feeData = await getFeeDetailsForChain(chainName);
     const gasPrice = feeData.gasPrice ?? 0n;
     const maxFeePerGas = feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n;
-    const maxPriorityFeePerGas =
+    const rawMaxPriorityFeePerGas =
       feeData.maxPriorityFeePerGas ?? maxFeePerGas ?? parseUnits("1", "gwei");
+    const maxPriorityFeePerGas =
+      rawMaxPriorityFeePerGas > maxFeePerGas
+        ? maxFeePerGas
+        : rawMaxPriorityFeePerGas;
+
+    const relayGasFloor =
+      maxFeePerGas > gasPrice
+        ? maxFeePerGas
+        : gasPrice;
+
+    const relayGasSafeBase =
+      maxPriorityFeePerGas > relayGasFloor
+        ? maxPriorityFeePerGas
+        : relayGasFloor;
+
+    const relayGasPrice = (relayGasSafeBase * 12n) / 10n;
     let evmGasType;
     let sendWithPublicWallet = false;
     let feeTokenDetails: Optional<FeeTokenDetails>;
@@ -324,18 +340,19 @@ export const getBroadcasterTranaction = async (
 ) => {
   const txidVersion = TXIDVersion.V2_PoseidonMerkle;
   const { to, data } = tx.transaction;
-  console.log(tx)
   const { nullifiers, preTransactionPOIsPerTxidLeafPerList } = tx;
   const broadcasterFeesID = tx.feesID;
   const chain = getChainForName(networkName);
-  const overallBatchMinGasPrice = tx.transaction.gasPrice ?? tx.transaction.maxFeePerGas ?? 0n;
+  const overallBatchMinGasPrice = tx.transaction.gasPrice; //?? tx.transaction.maxFeePerGas ?? 0n;
   const relayTx = getWakuTransaction();
 
+  const min = tx.transaction.maxFeePerGas 
+  const max = tx.transaction.maxPriorityFeePerGas > tx.transaction.maxFeePerGas ? tx.transaction.maxFeePerGas : tx.transaction.maxPriorityFeePerGas > 0n ? tx.transaction.maxPriorityFeePerGas : parseUnits('0.01', 'gwei');
+
   const type4FeeOverrides = tx.transaction.type === EVMGasType.Type4 ? {
-    maxFeePerGas: tx.transaction.maxFeePerGas,
-    maxPriorityFeePerGas: tx.transaction.maxPriorityFeePerGas > 0n ? tx.transaction.maxPriorityFeePerGas : parseUnits('0.1', 'gwei'),
+    maxFeePerGas: min,
+    maxPriorityFeePerGas: max,
   } : undefined;
-  console.log(type4FeeOverrides)
   const encryptedTransaction = await relayTx.create(
     txidVersion,
     to,

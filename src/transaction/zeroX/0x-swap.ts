@@ -49,6 +49,7 @@ import {
 } from "../../models/0x-models";
 import { getTransactionGasDetails } from "../private/private-tx";
 import { getCurrentEthersWallet } from "../../wallet/public-utils";
+import { getCurrentKnownEphemeralState } from "../../wallet/ephemeral-wallet-manager";
 
 export const updateApiKey = () => {
   const zeroXApiKey = configDefaults.apiKeys.zeroXApi;
@@ -60,7 +61,7 @@ export const getSwapQuote = async (
   buyERC20Info: RecipeERC20Info,
   slippagePercentage = 500,
   isRailgun = false,
-  activeWalletAddress?: string
+  activeWalletAddress?: string,
 
 ): Promise<SwapQuoteDataV2> => {
   const quoteParams: SwapQuoteParamsV2 = {
@@ -69,7 +70,7 @@ export const getSwapQuote = async (
     buyERC20Info,
     slippageBasisPoints: slippagePercentage,
     isRailgun,
-    activeWalletAddress
+    activeWalletAddress,
   };
   const quote = await ZeroXV2Quote.getSwapQuote(quoteParams);
 
@@ -109,12 +110,13 @@ export const getZer0XSwapInputs = async (
   if (!isPublic) {
     // FORCE US AS RECIPIENT FOR NOW
     const privateSwapRecipient = getCurrentRailgunAddress();
-
+    const ephemeralState = getCurrentKnownEphemeralState()
     const swap = new ZeroXV2SwapRecipe(
       sellERC20Info,
       buyERC20Info,
       slippageBasisPoints,
       privateSwapRecipient,
+      ephemeralState?.currentAddress
     );
     const recipeInput: RecipeInput = {
       networkName: chainName,
@@ -246,7 +248,7 @@ export const getZer0XSwapTransactionGasEstimate = async (
     feeTokenInfo,
     feeTokenDetails,
     broadcasterSelection,
-    overallBatchMinGasPrice,
+    0n, //overallBatchMinGasPrice, TODO: hacked for now
   );
 };
 
@@ -298,7 +300,7 @@ export const getProvedZer0XSwapTransaction = async (
       crossContractCalls,
       broadcasterFeeERC20Recipient,
       sendWithPublicWallet,
-      overallBatchMinGasPrice,
+      0n,
       minGasLimit,
       progressCallback,
     )
@@ -321,7 +323,7 @@ export const getProvedZer0XSwapTransaction = async (
         crossContractCalls,
         broadcasterFeeERC20Recipient,
         sendWithPublicWallet,
-        overallBatchMinGasPrice,
+        0n,
         estimatedGasDetails,
       );
 

@@ -113,7 +113,7 @@ export const getGasEstimates = async (
   const maxFeePerGas = maxPriorityFeePerGas + baseFeePerGas;
 
   return {
-    gasPrice,
+    gasPrice: (gasPrice * 11000n )/ 10000n, // Add 10% to gas price for safety
     maxFeePerGas,
     maxPriorityFeePerGas,
     baseFeePerGas,
