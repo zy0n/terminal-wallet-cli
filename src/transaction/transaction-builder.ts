@@ -1524,10 +1524,16 @@ export const runTransactionBuilder = async (
           ];
         }
 
+        const use7702Only =
+          // transactionType === RailgunTransaction.ShieldBase ||
+          transactionType === RailgunTransaction.UnshieldBase ||
+          transactionType === RailgunTransaction.Private0XSwap;
+
         _broadcasterSelection = await runFeeTokenSelector(
           chainName,
           amountRecipients,
           broadcasterSelection,
+          use7702Only,
         ).catch((err) => {
           console.log(err.message);
           if (err.message === "Going back to previous menu.") {

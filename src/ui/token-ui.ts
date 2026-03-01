@@ -150,6 +150,7 @@ export const runFeeTokenSelector = async (
   chainName: NetworkName,
   amountRecipients: RailgunERC20AmountRecipient[],
   currentBroadcaster?: SelectedBroadcaster,
+  use7702Only: boolean = false,
 ): Promise<{ bestBroadcaster: SelectedBroadcaster } | undefined> => {
   const formatFeeRatioToOneEth = (feePerUnitGas: string) => {
     const ratio = parseFloat(formatUnits(BigInt(feePerUnitGas), 18));
@@ -176,6 +177,27 @@ export const runFeeTokenSelector = async (
   const broadcasterSelectionPrompt = async (feeTokenAddress: string) => {
     const waku = getWakuClient();
     const chain = getChainForName(chainName);
+    const broadcasters = waku.findBroadcastersForToken(
+      chain,
+      feeTokenAddress.toLowerCase(),
+      true,
+      use7702Only,
+    );
+
+    if (!isDefined(broadcasters) || broadcasters.length === 0) {
+      return undefined;
+    }
+
+    return [...broadcasters].sort((a, b) => {
+      const feeA = BigInt(a.tokenFee.feePerUnitGas);
+      const feeB = BigInt(b.tokenFee.feePerUnitGas);
+      return feeA < feeB ? -1 : feeA > feeB ? 1 : 0;
+    })[0];
+  };
+
+  const manualBroadcasterSelectionPrompt = async (feeTokenAddress: string) => {
+    const waku = getWakuClient();
+    const chain = getChainForName(chainName);
     const feeTokenInfo = await getTokenInfo(chainName, feeTokenAddress).catch(
       () => undefined,
     );
@@ -185,6 +207,7 @@ export const runFeeTokenSelector = async (
       chain,
       feeTokenAddress.toLowerCase(),
       true,
+      use7702Only,
     );
 
     if (!isDefined(broadcasters) || broadcasters.length === 0) {
@@ -201,7 +224,6 @@ export const runFeeTokenSelector = async (
       header: " ",
       message: "Select Broadcaster",
       choices: [
-        { name: "auto-cheapest", message: "Auto-pick cheapest".green },
         ...getBroadcasterChoicesForToken(ordered, feeTokenSymbol),
         { name: "go-back", message: "Go Back".grey },
       ],
@@ -213,11 +235,61 @@ export const runFeeTokenSelector = async (
       return undefined;
     }
 
-    if (selected === "auto-cheapest") {
-      return ordered[0];
+    return ordered[parseInt(selected, 10)];
+  };
+
+  const autoSelectFeeTokenAndBroadcaster = async () => {
+    const balances = await getPrivateERC20BalancesForChain(chainName);
+    const waku = getWakuClient();
+    const chain = getChainForName(chainName);
+
+    let bestBroadcaster: SelectedBroadcaster | undefined;
+    for (const balance of balances) {
+      let spentBalance = 0n;
+      amountRecipients.forEach((tokenInfo) => {
+        if (
+          tokenInfo.tokenAddress.toLowerCase() ===
+          balance.tokenAddress.toLowerCase()
+        ) {
+          spentBalance += tokenInfo.amount;
+        }
+      });
+
+      const availableAmount = balance.amount - spentBalance;
+      if (availableAmount <= 0n) {
+        continue;
+      }
+
+      const broadcasters = waku.findBroadcastersForToken(
+        chain,
+        balance.tokenAddress.toLowerCase(),
+        true,
+        use7702Only,
+      );
+
+      if (!isDefined(broadcasters) || broadcasters.length === 0) {
+        continue;
+      }
+
+      const cheapestForToken = [...broadcasters].sort((a, b) => {
+        const feeA = BigInt(a.tokenFee.feePerUnitGas);
+        const feeB = BigInt(b.tokenFee.feePerUnitGas);
+        return feeA < feeB ? -1 : feeA > feeB ? 1 : 0;
+      })[0];
+
+      if (!bestBroadcaster) {
+        bestBroadcaster = cheapestForToken;
+        continue;
+      }
+
+      const currentBest = BigInt(bestBroadcaster.tokenFee.feePerUnitGas);
+      const nextBest = BigInt(cheapestForToken.tokenFee.feePerUnitGas);
+      if (nextBest < currentBest) {
+        bestBroadcaster = cheapestForToken;
+      }
     }
 
-    return ordered[parseInt(selected, 10)];
+    return bestBroadcaster;
   };
 
   const additionalChoices = currentBroadcaster
@@ -236,7 +308,18 @@ export const runFeeTokenSelector = async (
     header: " ",
     message: "Transaction Fee Options",
     choices: [
-      { name: "relayed", message: "Use a Broadcaster" },
+      {
+        name: "relayed-full-auto",
+        message: "Use Broadcaster (Full-auto)",
+      },
+      {
+        name: "relayed-token-auto",
+        message: "Use Broadcaster (Select token & auto broadcaster)",
+      },
+      {
+        name: "relayed-manual",
+        message: "Use Broadcaster (Manual)",
+      },
       {
         name: "self-signed",
         message: `Self Sign Transaction ${"Self-Broadcast".yellow}`,
@@ -258,7 +341,7 @@ export const runFeeTokenSelector = async (
         }
         // WANT THIS FALL THROUGH here
       }
-      case "relayed": {
+      case "relayed-manual": {
         {
           if (feeOption !== "different-broadcaster") {
             const feeToken = await feeTokenSelectionPrompt(
@@ -272,12 +355,13 @@ export const runFeeTokenSelector = async (
                 chainName,
                 amountRecipients,
                 currentBroadcaster,
+                use7702Only,
               );
             }
             feeTokenAddress = feeToken.tokenAddress;
           }
           try {
-            const bestBroadcaster = await broadcasterSelectionPrompt(
+            const bestBroadcaster = await manualBroadcasterSelectionPrompt(
               feeTokenAddress,
             );
             if (bestBroadcaster) {
@@ -288,10 +372,62 @@ export const runFeeTokenSelector = async (
               chainName,
               amountRecipients,
               currentBroadcaster,
+              use7702Only,
             );
           } catch (err) {
             console.log(err);
           }
+        }
+        break;
+      }
+      case "relayed-token-auto": {
+        const feeToken = await feeTokenSelectionPrompt(
+          chainName,
+          false,
+          amountRecipients,
+        );
+        if (!feeToken) {
+          return runFeeTokenSelector(
+            chainName,
+            amountRecipients,
+            currentBroadcaster,
+            use7702Only,
+          );
+        }
+        try {
+          const bestBroadcaster = await broadcasterSelectionPrompt(
+            feeToken.tokenAddress,
+          );
+          if (bestBroadcaster) {
+            return { bestBroadcaster };
+          }
+          console.log("No Broadcasters Found for Selected Fee Token".yellow);
+          return runFeeTokenSelector(
+            chainName,
+            amountRecipients,
+            currentBroadcaster,
+            use7702Only,
+          );
+        } catch (err) {
+          console.log(err);
+        }
+        break;
+      }
+      case "relayed-full-auto": {
+        try {
+          const bestBroadcaster = await autoSelectFeeTokenAndBroadcaster();
+          if (bestBroadcaster) {
+            return { bestBroadcaster };
+          }
+          console.log("No Broadcasters Found for Available Fee Tokens".yellow);
+          return runFeeTokenSelector(
+            chainName,
+            amountRecipients,
+            currentBroadcaster,
+            use7702Only,
+          );
+        } catch (err) {
+          console.log(err);
         }
         break;
       }
@@ -300,7 +436,12 @@ export const runFeeTokenSelector = async (
       }
       case "clear-broadcaster-list": {
         resetBroadcasterFilters();
-        return runFeeTokenSelector(chainName, amountRecipients, undefined);
+        return runFeeTokenSelector(
+          chainName,
+          amountRecipients,
+          undefined,
+          use7702Only,
+        );
       }
       case "go-back": {
         throw new Error("Going back to previous menu.");
