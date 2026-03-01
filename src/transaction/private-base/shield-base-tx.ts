@@ -7,9 +7,10 @@ import {
 } from "@railgun-community/shared-models";
 import {
   EphemeralAccount,
+  EphemeralKeyManager,
+  fullWalletForID,
   getShieldPrivateKeySignatureMessage,
   gasEstimateForShieldBaseToken,
-  getCurrentEphemeralWallet,
   populateShieldBaseToken,
 } from "@railgun-community/wallet";
 import { Wallet, formatUnits, keccak256 } from "ethers";
@@ -32,11 +33,11 @@ export const getShieldBaseTokenGasDetails = async (
 
   const wrappedInfo = getWrappedTokenInfoForChain(chainName);
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
-  const ephemeralWallet = await getCurrentEphemeralWallet(
-    railgunWalletID,
+  const ephemeralManager = new EphemeralKeyManager(
+    fullWalletForID(railgunWalletID),
     encryptionKey,
   );
-  const ephemeralAccount = new EphemeralAccount(ephemeralWallet);
+  const ephemeralAccount = await ephemeralManager.getCurrentAccount();
 
   const { gasEstimate } = await gasEstimateForShieldBaseToken(
     txIDVersion,
@@ -77,11 +78,11 @@ export const getProvedShieldBaseTokenTransaction = async (
   const { shieldPrivateKey, fromWalletAddress } =
     await getCurrentShieldPrivateKey();
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
-  const ephemeralWallet = await getCurrentEphemeralWallet(
-    railgunWalletID,
+  const ephemeralManager = new EphemeralKeyManager(
+    fullWalletForID(railgunWalletID),
     encryptionKey,
   );
-  const ephemeralAccount = new EphemeralAccount(ephemeralWallet);
+  const ephemeralAccount = await ephemeralManager.getCurrentAccount();
 
   const { transaction } = await populateShieldBaseToken(
     txIDVersion,
