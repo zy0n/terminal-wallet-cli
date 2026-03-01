@@ -61,15 +61,15 @@
   "resolutions": {
     "@railgun-community/shared-models": "file:./local-deps/railgun-community-shared-models-v8.1.2.tgz",
     "@railgun-community/waku-broadcaster-client-node": "file:./local-deps/railgun-community-waku-broadcaster-client-node-v9.1.1.tgz",
-    "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.4.tgz",
+    "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.5.tgz",
     "@railgun-community/wallet": "file:./local-deps/railgun-community-wallet-v10.9.2.tgz"
   },
   "overrides": {
     "@railgun-community/shared-models": "file:./local-deps/railgun-community-shared-models-v8.1.2.tgz",
-    "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.4.tgz",
+    "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.5.tgz",
     "@railgun-community/wallet": {
       "@railgun-community/shared-models": "file:./local-deps/railgun-community-shared-models-v8.1.2.tgz",
-      "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.4.tgz"
+      "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.5.tgz"
     }
   },
   "dependencies": {
@@ -80,7 +80,7 @@
     "@railgun-community/poseidon-hash-rsjs": "1.0.1",
     "@railgun-community/shared-models": "file:./local-deps/railgun-community-shared-models-v8.1.2.tgz",
     "@railgun-community/waku-broadcaster-client-node": "file:./local-deps/railgun-community-waku-broadcaster-client-node-v9.1.1.tgz",
-    "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.4.tgz",
+    "@railgun-community/engine": "file:./local-deps/railgun-community-engine-v9.5.5.tgz",
     "@railgun-community/wallet": "file:./local-deps/railgun-community-wallet-v10.9.2.tgz",
     "bn": "1.0.5",
     "colors": "^1.4.0",
