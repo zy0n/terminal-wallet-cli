@@ -1,0 +1,43 @@
+diff --git a/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.d.ts b/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.d.ts
+index ba43f9f..d63d5d3 100644
+--- a/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.d.ts
++++ b/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.d.ts
+@@ -9,7 +9,7 @@ export declare class ZeroXV2SwapRecipe extends SwapRecipe {
+     private readonly slippageBasisPoints;
+     protected readonly destinationAddress: Optional<string>;
+     protected readonly isRailgunDestinationAddress: Optional<boolean>;
+-    constructor(sellERC20Info: RecipeERC20Info, buyERC20Info: RecipeERC20Info, slippageBasisPoints: number, destinationAddress?: string);
++    constructor(sellERC20Info: RecipeERC20Info, buyERC20Info: RecipeERC20Info, slippageBasisPoints: number, destinationAddress?: string, ephemeralAddress?: string);
+     protected supportsNetwork(networkName: NetworkName): boolean;
+     getSwapQuote(networkName: NetworkName, sellERC20Amount: RecipeERC20Amount): Promise<SwapQuoteDataV2>;
+     protected getInternalSteps(firstInternalStepInput: StepInput): Promise<Step[]>;
+diff --git a/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.js b/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.js
+index dcae554..7420e81 100644
+--- a/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.js
++++ b/node_modules/@railgun-community/cookbook/dist/recipes/swap/zero-x-v2-swap-recipe.js
+@@ -20,12 +20,14 @@ class ZeroXV2SwapRecipe extends swap_recipe_1.SwapRecipe {
+     slippageBasisPoints;
+     destinationAddress;
+     isRailgunDestinationAddress;
+-    constructor(sellERC20Info, buyERC20Info, slippageBasisPoints, destinationAddress) {
++    ephemeralAddress;
++    constructor(sellERC20Info, buyERC20Info, slippageBasisPoints, destinationAddress, ephemeralAddress) {
+         super();
+         this.sellERC20Info = sellERC20Info;
+         this.buyERC20Info = buyERC20Info;
+         this.slippageBasisPoints = slippageBasisPoints;
+         this.destinationAddress = destinationAddress;
++        this.ephemeralAddress = ephemeralAddress;
+         if ((0, shared_models_1.isDefined)(destinationAddress)) {
+             this.isRailgunDestinationAddress =
+                 (0, utils_1.isPrefixedRailgunAddress)(destinationAddress);
+@@ -48,7 +50,8 @@ class ZeroXV2SwapRecipe extends swap_recipe_1.SwapRecipe {
+             sellERC20Amount,
+             buyERC20Info: this.buyERC20Info,
+             slippageBasisPoints: this.slippageBasisPoints,
+-            isRailgun: true,
++            isRailgun: false,
++            activeWalletAddress: this.ephemeralAddress,
+         };
+         return zero_x_v2_1.ZeroXV2Quote.getSwapQuote(quoteParams);
+     }
