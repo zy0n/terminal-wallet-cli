@@ -479,10 +479,10 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         : `(${ephemeralMeta})`.dim;
 
       const walletInfoString = [
-        `${"┌─ Wallet".grey} ${walletIdentity}`,
-        `${"│".grey} Private   ${privateAddress}`,
-        `${"│".grey} Public    ${publicAddress}`,
-        `${"│".grey} Ephemeral ${shownEphemeralAddress} ${shownEphemeralMeta}`,
+        `${"┌─ Wallet".grey} ${walletIdentity}  | (Public) ${publicAddress}`,
+        `${"│".grey} (Private) ${privateAddress} | (Ephemeral) ${shownEphemeralAddress} ${shownEphemeralMeta}`,
+        // `${"│".grey}`,
+        // `${"│".grey} `,
         `${"└─".grey}`,
       ].join("\n");
 
@@ -513,7 +513,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         balanceBlock += `${outputstring}`;
       }
 
-      const displayStatus = `${"Display".grey}: Privacy ${
+      const displayStatus = `${broadcasterStatus} ${"Display".grey}: Privacy ${
         hidePrivateInfo ? "Hidden".yellow : "Visible".green
       } • Sender ${
         shouldShowSender() ? "Visible".green : "Hidden".yellow
@@ -524,7 +524,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       return [
         "",
         walletInfoString,
-        broadcasterStatus,
+        // broadcasterStatus,
         displayStatus,
         balanceBlock,
         `${
