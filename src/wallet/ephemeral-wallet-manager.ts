@@ -92,15 +92,18 @@ export const syncCurrentEphemeralWallet = async (
   }>
 > => {
   const walletID = getCurrentRailgunID();
-  if (!isDefined(walletID)) {
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+  if (!isDefined(walletID) || !isDefined(chain)) {
     return undefined;
   }
+  const chainId = BigInt(chain.id);
 
   const manager = getEphemeralKeyManager(walletID, encryptionKey);
   await autoSyncEphemeralIndex(manager);
 
-  const currentAccount = await manager.getCurrentAccount();
-  const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex();
+  const currentAccount = await manager.getCurrentAccount(chainId);
+  const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex(chainId);
   const currentAddress = currentAccount.address;
   cacheEphemeralState(walletID, currentIndex, currentAddress);
 
@@ -123,6 +126,12 @@ export const ratchetEphemeralWalletOnSuccess = async (
   if (!isDefined(encryptionKey)) {
     return false;
   }
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+  if ( !isDefined(chain)) {
+    return undefined;
+  }
+  const chainId = BigInt(chain.id);
 
   const synced = await syncCurrentEphemeralWallet(encryptionKey);
   if (!isDefined(synced)) {
@@ -130,8 +139,8 @@ export const ratchetEphemeralWalletOnSuccess = async (
   }
 
   const manager = getEphemeralKeyManager(synced.walletID, encryptionKey);
-  const nextAccount = await manager.getNextAccount();
-  const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex();
+  const nextAccount = await manager.getNextAccount(chainId);
+  const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex(chainId);
   cacheEphemeralState(synced.walletID, nextIndex, nextAccount.address);
 
   return true;
@@ -142,10 +151,16 @@ export const manualRatchetEphemeralWallet = async (encryptionKey: string) => {
   if (!isDefined(synced)) {
     return undefined;
   }
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+  if ( !isDefined(chain)) {
+    return undefined;
+  }
+  const chainId = BigInt(chain.id);
 
   const manager = getEphemeralKeyManager(synced.walletID, encryptionKey);
-  const nextAccount = await manager.getNextAccount();
-  const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex();
+  const nextAccount = await manager.getNextAccount(chainId);
+  const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex(chainId);
   cacheEphemeralState(synced.walletID, nextIndex, nextAccount.address);
 
   return {
@@ -167,12 +182,18 @@ export const setEphemeralWalletIndex = async (
   if (!isDefined(walletID)) {
     return undefined;
   }
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+  if ( !isDefined(chain)) {
+    return undefined;
+  }
+  const chainId = BigInt(chain.id);
 
   const railgunWallet = fullWalletForID(walletID);
-  await railgunWallet.setEphemeralKeyIndex(index);
+  await railgunWallet.setEphemeralKeyIndex(chainId, index);
 
   const manager = getEphemeralKeyManager(walletID, encryptionKey);
-  const currentAccount = await manager.getCurrentAccount();
+  const currentAccount = await manager.getCurrentAccount(chainId);
   cacheEphemeralState(walletID, index, currentAccount.address);
 
   return {

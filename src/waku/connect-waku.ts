@@ -1,9 +1,11 @@
 import { Chain, isDefined, NetworkName } from "@railgun-community/shared-models";
 import { getChainForName, remoteConfig } from "../network/network-util";
+import { pushUILog } from "../ui/log-ui";
 import {
   WakuBroadcasterClient,
   WakuBroadcasterTransaction,
   BroadcasterOptions,
+  BroadcasterDebugger,
 } from "../models/waku-models";
 
 let wakuBroadcasterTransaction: WakuBroadcasterTransaction;
@@ -16,6 +18,15 @@ export let wakuClient: WakuBroadcasterClient;
 const trustedFeeSigner = '0zk1qyzgh9ctuxm6d06gmax39xutjgrawdsljtv80lqnjtqp3exxayuf0rv7j6fe3z53laetcl9u3cma0q9k4npgy8c8ga4h6mx83v09m8ewctsekw4a079dcl5sw4k'
 const broadcasterOptions: BroadcasterOptions = {
   trustedFeeSigner,
+};
+
+const broadcasterDebugger: BroadcasterDebugger = {
+  log: (msg: string) => {
+    pushUILog(msg, "log");
+  },
+  error: (error: Error) => {
+    pushUILog(error, "error");
+  },
 };
 
 
@@ -86,12 +97,12 @@ export const startWakuClient = async (chainName: NetworkName) => {
   }
   const chain = getChainForName(chainName);
   const peerOverrides = remoteConfig.additionalDirectPeers ?? [];
-  // broadcasterOptions.additionalDirectPeers = peerOverrides;
+  broadcasterOptions.additionalDirectPeers = peerOverrides;
   broadcasterOptions.pubSubTopic = remoteConfig.wakuPubSubTopic;
   if(isDefined(remoteConfig.trustedFeeSigner)){
     broadcasterOptions.trustedFeeSigner = remoteConfig.trustedFeeSigner;
   }
-  wakuClient.start(chain, broadcasterOptions, wakuStatusCallback, undefined);
+  wakuClient.start(chain, broadcasterOptions, wakuStatusCallback, broadcasterDebugger);
 };
 
 export const stopWakuClient = async () => {

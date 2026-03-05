@@ -1,26 +1,25 @@
 import {
   NetworkName,
-  RailgunERC20Amount,
   RailgunERC20AmountRecipient,
   TXIDVersion,
   TransactionGasDetails,
+  isDefined,
 } from "@railgun-community/shared-models";
 import {
-  EphemeralAccount,
   EphemeralKeyManager,
   fullWalletForID,
-  getShieldPrivateKeySignatureMessage,
   gasEstimateForShieldBaseToken,
   populateShieldBaseToken,
 } from "@railgun-community/wallet";
-import { Wallet, formatUnits, keccak256 } from "ethers";
-import { getWrappedTokenInfoForChain } from "../../network/network-util";
+import { formatUnits } from "ethers";
+import { getChainForName, getWrappedTokenInfoForChain } from "../../network/network-util";
 import {
   calculateEstimatedGasCost,
   getPublicGasDetails,
 } from "../../gas/gas-util";
 import { PrivateGasEstimate } from "../../models/transaction-models";
 import { getCurrentShieldPrivateKey } from "../../wallet/public-utils";
+import { getCurrentNetwork } from "../../engine/engine";
 
 export const getShieldBaseTokenGasDetails = async (
   chainName: NetworkName,
@@ -37,7 +36,11 @@ export const getShieldBaseTokenGasDetails = async (
     fullWalletForID(railgunWalletID),
     encryptionKey,
   );
-  const ephemeralAccount = await ephemeralManager.getCurrentAccount();
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+
+  const chainId = BigInt(chain.id);
+  const ephemeralAccount = await ephemeralManager.getCurrentAccount(chainId);
 
   const { gasEstimate } = await gasEstimateForShieldBaseToken(
     txIDVersion,
@@ -82,7 +85,13 @@ export const getProvedShieldBaseTokenTransaction = async (
     fullWalletForID(railgunWalletID),
     encryptionKey,
   );
-  const ephemeralAccount = await ephemeralManager.getCurrentAccount();
+    const networkName = getCurrentNetwork();
+    const chain = getChainForName(networkName);
+    if ( !isDefined(chain)) {
+      return undefined;
+    }
+    const chainId = BigInt(chain.id);
+  const ephemeralAccount = await ephemeralManager.getCurrentAccount(chainId);
 
   const { transaction } = await populateShieldBaseToken(
     txIDVersion,
