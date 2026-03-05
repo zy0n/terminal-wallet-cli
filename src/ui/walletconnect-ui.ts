@@ -209,6 +209,14 @@ const runApproveRequestPrompt = async () => {
     ].join(" · ").yellow,
   );
 
+  if (isDefined(selected.params)) {
+    const rawParams = JSON.stringify(selected.params);
+    const preview = rawParams.length > 220
+      ? `${rawParams.slice(0, 220)}...`
+      : rawParams;
+    console.log(`params=${preview}`.grey);
+  }
+
   const confirmed = await confirmPrompt(
     `Approve WalletConnect request #${selected.id}?`,
     { initial: false },

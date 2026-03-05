@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { isDefined } from "@railgun-community/shared-models";
+import { getBytes } from "ethers";
 import configDefaults from "../config/config-defaults";
 import {
   WalletConnectBundledCall,
@@ -11,6 +12,7 @@ import { upsertEphemeralSessionScope } from "../wallet/ephemeral-wallet-manager"
 import { walletManager } from "../wallet/wallet-manager";
 import { pushUILog } from "../ui/log-ui";
 import { getCurrentWalletPublicAddress } from "../wallet/wallet-util";
+import { getCurrentEthersWallet } from "../wallet/public-utils";
 import { getCurrentNetwork } from "../engine/engine";
 import { getChainForName } from "../network/network-util";
 
@@ -101,6 +103,11 @@ export type WalletConnectSessionSummary = {
 type RuntimeSessionRequestEvent = {
   id: number;
   topic: string;
+  verifyContext?: {
+    verified?: {
+      origin?: string;
+    };
+  };
   params: {
     chainId?: string;
     request: {
@@ -169,6 +176,33 @@ let walletConnectCore: any | undefined = undefined;
 let walletKit: any | undefined = undefined;
 let walletKitInitializing: Promise<any> | undefined = undefined;
 let walletKitListenersAttached = false;
+
+type WalletSendCallsStatusReceipt = {
+  logs: {
+    address: string;
+    data: string;
+    topics: string[];
+  }[];
+  status: string;
+  blockHash: string;
+  blockNumber: string;
+  gasUsed: string;
+  transactionHash: string;
+};
+
+type WalletSendCallsStatusEntry = {
+  id: string;
+  chainId: string;
+  status: number;
+  atomic: boolean;
+  version: string;
+  transactionHashes: string[];
+  receipts?: WalletSendCallsStatusReceipt[];
+  createdAt: number;
+  updatedAt: number;
+};
+
+const walletSendCallsStatusByID: MapType<WalletSendCallsStatusEntry> = {};
 
 let walletConnectSdkLoader: Promise<any> | undefined = undefined;
 
@@ -455,12 +489,23 @@ const attachWalletKitListeners = (client: any) => {
   });
 
   client.on("session_request", (event: RuntimeSessionRequestEvent) => {
+    const method = event.params.request.method;
     pushUILog(
-      `WalletConnect session request on topic ${event.topic}: ${event.params.request.method}`,
+      `WalletConnect session request on topic ${event.topic}: ${method}`,
       "log",
     );
 
     captureWalletConnectBundle(event);
+
+    if (shouldAutoApproveRequestMethod(method)) {
+      void respondToSessionRequest(client, event).catch((error) => {
+        pushUILog(
+          `WalletConnect failed to auto-respond to ${method} on ${event.topic}: ${(error as Error).message}`,
+          "error",
+        );
+      });
+      return;
+    }
 
     pushUILog(
       `WalletConnect request ${event.id} is pending manual approval/rejection.`,
@@ -669,13 +714,530 @@ const getConnectedAddressForTopic = (topic: string) => {
   return normalizeWalletConnectAccountAddress(getCurrentWalletPublicAddress());
 };
 
+const getRequestedCapabilityChainIDs = (params: unknown): string[] => {
+  if (!Array.isArray(params) || params.length < 2) {
+    return [getCurrentChainIDHex()];
+  }
+
+  const maybeChains = params[1];
+  if (!Array.isArray(maybeChains)) {
+    return [getCurrentChainIDHex()];
+  }
+
+  const chains = maybeChains
+    .filter((chainID) => {
+      return typeof chainID === "string" && /^0x[0-9a-fA-F]+$/.test(chainID);
+    })
+    .map((chainID) => (chainID as string).toLowerCase());
+
+  return chains.length ? chains : [getCurrentChainIDHex()];
+};
+
+const getWalletCapabilitiesResult = (params: unknown) => {
+  const chainIDs = getRequestedCapabilityChainIDs(params);
+  return chainIDs.reduce<Record<string, Record<string, unknown>>>((acc, chainID) => {
+    acc[chainID] = {};
+    return acc;
+  }, {});
+};
+
+const getWalletPermissionsResult = (event: RuntimeSessionRequestEvent) => {
+  const connectedAddress = getConnectedAddressForTopic(event.topic);
+  const origin = event.verifyContext?.verified?.origin;
+  const invoker = typeof origin === "string" && /^https?:\/\//.test(origin)
+    ? origin
+    : "https://walletconnect.local";
+
+  return [
+    {
+      caveats: [
+        {
+          type: "restrictReturnedAccounts",
+          value: [connectedAddress],
+        },
+      ],
+      date: Date.now(),
+      id: `eth_accounts:${connectedAddress}`,
+      invoker,
+      parentCapability: "eth_accounts",
+    },
+  ];
+};
+
+const getClientVersion = () => {
+  return "Terminal Wallet CLI/WalletConnect";
+};
+
+const toRpcHex = (value: bigint | number) => {
+  const asBigInt = typeof value === "number" ? BigInt(value) : value;
+  return `0x${asBigInt.toString(16)}`;
+};
+
+const createWalletSendCallsID = () => {
+  return `wc_calls_${Date.now().toString(36)}_${Math.floor(
+    Math.random() * 1_000_000,
+  ).toString(36)}`;
+};
+
+const parseWalletSendCallsInput = (params: unknown) => {
+  const root = Array.isArray(params) ? params[0] : params;
+  if (!isDefined(root) || typeof root !== "object") {
+    throw new Error("Invalid wallet_sendCalls params.");
+  }
+
+  const payload = root as {
+    from?: unknown;
+    chainId?: unknown;
+    calls?: unknown;
+  };
+
+  const requestedAddress =
+    typeof payload.from === "string" && isHexAddress(payload.from)
+      ? payload.from
+      : undefined;
+
+  if (!Array.isArray(payload.calls) || payload.calls.length === 0) {
+    throw new Error("wallet_sendCalls requires at least one call.");
+  }
+
+  const chainIdValue =
+    typeof payload.chainId === "string" ? payload.chainId.trim().toLowerCase() : undefined;
+
+  const calls = payload.calls.map((rawCall, index) => {
+    if (!isDefined(rawCall) || typeof rawCall !== "object") {
+      throw new Error(`wallet_sendCalls call[${index}] is invalid.`);
+    }
+
+    const call = rawCall as {
+      to?: unknown;
+      value?: unknown;
+      data?: unknown;
+      operation?: unknown;
+    };
+
+    const to = typeof call.to === "string" ? call.to.trim() : "";
+    if (!to.length || !isHexAddress(to)) {
+      throw new Error(`wallet_sendCalls call[${index}] has invalid to address.`);
+    }
+
+    const operation = parseRpcQuantityToNumber(call.operation, "operation") ?? 0;
+    if (operation !== 0) {
+      throw new Error("wallet_sendCalls only supports operation=0.");
+    }
+
+    return {
+      to,
+      data: typeof call.data === "string" ? normalizeData(call.data) : "0x",
+      value: parseRpcQuantityToBigInt(call.value, "value") ?? 0n,
+    };
+  });
+
+  return { requestedAddress, chainIdValue, calls };
+};
+
+const parseWalletGetCallsStatusInput = (params: unknown) => {
+  if (!Array.isArray(params) || params.length < 1) {
+    throw new Error("wallet_getCallsStatus requires an id param.");
+  }
+  const id = params[0];
+  if (typeof id !== "string" || !id.trim().length) {
+    throw new Error("wallet_getCallsStatus id param is invalid.");
+  }
+  return id.trim();
+};
+
+const getWalletSendCallsStatusResult = (id: string) => {
+  const entry = walletSendCallsStatusByID[id];
+  if (!isDefined(entry)) {
+    throw new Error(`Unknown wallet_sendCalls id: ${id}`);
+  }
+
+  return {
+    atomic: entry.atomic,
+    capabilities: {
+      caip345: {
+        transactionHashes: entry.transactionHashes,
+      },
+    },
+    chainId: entry.chainId,
+    id: entry.id,
+    receipts: entry.receipts,
+    status: entry.status,
+    version: entry.version,
+  };
+};
+
+const shouldAutoApproveRequestMethod = (method: string) => {
+  return [
+    "wallet_getCapabilities",
+    "wallet_getCallsStatus",
+    "eth_chainId",
+    "net_version",
+    "eth_accounts",
+    "eth_requestAccounts",
+    "eth_coinbase",
+    "web3_clientVersion",
+    "wallet_getPermissions",
+  ].includes(method);
+};
+
+const resolveManualSigningAddress = (
+  topic: string,
+  requestedAddress?: string,
+) => {
+  const connectedAddress = getConnectedAddressForTopic(topic);
+  const normalizedRequested = isDefined(requestedAddress)
+    ? normalizeWalletConnectAccountAddress(requestedAddress)
+    : connectedAddress;
+
+  if (normalizedRequested !== connectedAddress) {
+    throw new Error(
+      `Requested signer ${normalizedRequested} does not match connected WalletConnect address ${connectedAddress}.`,
+    );
+  }
+
+  return connectedAddress;
+};
+
+const getConnectedWalletSignerForTopic = (
+  topic: string,
+  requestedAddress?: string,
+) => {
+  const connectedAddress = resolveManualSigningAddress(topic, requestedAddress);
+  const signer = getCurrentEthersWallet();
+  const signerAddress = normalizeWalletConnectAccountAddress(signer.address);
+  if (signerAddress !== connectedAddress) {
+    throw new Error(
+      `Current signer ${signerAddress} does not match connected WalletConnect address ${connectedAddress}.`,
+    );
+  }
+  return signer;
+};
+
+const parsePersonalSignInput = (params: unknown) => {
+  if (!Array.isArray(params) || params.length < 1) {
+    throw new Error("Invalid personal_sign params.");
+  }
+
+  const first = params[0];
+  const second = params[1];
+
+  let requestedAddress: Optional<string>;
+  let message: unknown;
+
+  if (typeof first === "string" && isHexAddress(first)) {
+    requestedAddress = first;
+    message = second;
+  } else if (typeof second === "string" && isHexAddress(second)) {
+    requestedAddress = second;
+    message = first;
+  } else {
+    message = first;
+  }
+
+  if (!isDefined(message)) {
+    throw new Error("Missing personal_sign message payload.");
+  }
+
+  return { requestedAddress, message };
+};
+
+const parseTypedDataV4Input = (params: unknown) => {
+  if (!Array.isArray(params) || params.length < 2) {
+    throw new Error("Invalid eth_signTypedData_v4 params.");
+  }
+
+  const first = params[0];
+  const second = params[1];
+
+  let requestedAddress: Optional<string>;
+  let typedDataPayload: unknown;
+
+  if (typeof first === "string" && isHexAddress(first)) {
+    requestedAddress = first;
+    typedDataPayload = second;
+  } else if (typeof second === "string" && isHexAddress(second)) {
+    requestedAddress = second;
+    typedDataPayload = first;
+  } else {
+    typedDataPayload = second;
+  }
+
+  if (!isDefined(typedDataPayload)) {
+    throw new Error("Missing eth_signTypedData_v4 payload.");
+  }
+
+  const parsedPayload =
+    typeof typedDataPayload === "string"
+      ? JSON.parse(typedDataPayload)
+      : typedDataPayload;
+
+  if (!isDefined(parsedPayload) || typeof parsedPayload !== "object") {
+    throw new Error("Invalid typed data payload.");
+  }
+
+  return { requestedAddress, parsedPayload: parsedPayload as Record<string, unknown> };
+};
+
+const parseRpcQuantityToBigInt = (
+  value: unknown,
+  fieldName: string,
+): Optional<bigint> => {
+  if (!isDefined(value)) {
+    return undefined;
+  }
+
+  if (typeof value === "bigint") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Invalid ${fieldName} value.`);
+    }
+    return BigInt(Math.floor(value));
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized.length) {
+      return undefined;
+    }
+    if (/^0x[0-9a-fA-F]+$/.test(normalized)) {
+      return BigInt(normalized);
+    }
+    if (/^[0-9]+$/.test(normalized)) {
+      return BigInt(normalized);
+    }
+  }
+
+  throw new Error(`Invalid ${fieldName} value.`);
+};
+
+const parseRpcQuantityToNumber = (
+  value: unknown,
+  fieldName: string,
+): Optional<number> => {
+  const asBigInt = parseRpcQuantityToBigInt(value, fieldName);
+  if (!isDefined(asBigInt)) {
+    return undefined;
+  }
+
+  if (asBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${fieldName} exceeds safe integer range.`);
+  }
+  return Number(asBigInt);
+};
+
+const parseEthSendTransactionInput = (params: unknown) => {
+  if (!Array.isArray(params) || params.length < 1) {
+    throw new Error("Invalid eth_sendTransaction params.");
+  }
+
+  const txLike = params[0] as Record<string, unknown>;
+  if (!isDefined(txLike) || typeof txLike !== "object") {
+    throw new Error("Missing eth_sendTransaction payload.");
+  }
+
+  const requestedAddress =
+    typeof txLike.from === "string" && isHexAddress(txLike.from)
+      ? txLike.from
+      : undefined;
+
+  const to = typeof txLike.to === "string" ? txLike.to.trim() : undefined;
+  if (isDefined(to) && to.length && !isHexAddress(to)) {
+    throw new Error("Invalid eth_sendTransaction recipient address.");
+  }
+
+  const currentChainIDHex = getCurrentChainIDHex().toLowerCase();
+  const txChainID = parseRpcQuantityToBigInt(txLike.chainId, "chainId");
+  if (isDefined(txChainID)) {
+    const normalizedTxChain = `0x${txChainID.toString(16)}`;
+    if (normalizedTxChain.toLowerCase() !== currentChainIDHex) {
+      throw new Error(
+        `eth_sendTransaction chain mismatch. request=${normalizedTxChain} wallet=${currentChainIDHex}`,
+      );
+    }
+  }
+
+  return {
+    requestedAddress,
+    transactionRequest: {
+      to,
+      data: typeof txLike.data === "string" ? normalizeData(txLike.data) : undefined,
+      value: parseRpcQuantityToBigInt(txLike.value, "value"),
+      nonce: parseRpcQuantityToNumber(txLike.nonce, "nonce"),
+      gasLimit: parseRpcQuantityToBigInt(txLike.gas, "gas"),
+      gasPrice: parseRpcQuantityToBigInt(txLike.gasPrice, "gasPrice"),
+      maxFeePerGas: parseRpcQuantityToBigInt(txLike.maxFeePerGas, "maxFeePerGas"),
+      maxPriorityFeePerGas: parseRpcQuantityToBigInt(
+        txLike.maxPriorityFeePerGas,
+        "maxPriorityFeePerGas",
+      ),
+      chainId: txChainID,
+    },
+  };
+};
+
+const buildManualApprovedRequestResult = async (
+  event: RuntimeSessionRequestEvent,
+): Promise<Optional<unknown>> => {
+  const { method, params } = event.params.request;
+
+  if (method === "personal_sign") {
+    const { requestedAddress, message } = parsePersonalSignInput(params);
+    const signer = getConnectedWalletSignerForTopic(event.topic, requestedAddress);
+    const signature =
+      typeof message === "string" && /^0x[0-9a-fA-F]*$/.test(message)
+        ? await signer.signMessage(getBytes(message))
+        : await signer.signMessage(String(message));
+    return signature;
+  }
+
+  if (method === "eth_signTypedData_v4") {
+    const { requestedAddress, parsedPayload } = parseTypedDataV4Input(params);
+    const signer = getConnectedWalletSignerForTopic(event.topic, requestedAddress);
+
+    const domain = (parsedPayload.domain ?? {}) as Record<string, unknown>;
+    const message = (parsedPayload.message ?? {}) as Record<string, unknown>;
+    const rawTypes = (parsedPayload.types ?? {}) as Record<string, unknown>;
+    const types = Object.entries(rawTypes).reduce<Record<string, unknown>>(
+      (acc, [key, value]) => {
+        if (key !== "EIP712Domain") {
+          acc[key] = value;
+        }
+        return acc;
+      },
+      {},
+    );
+
+    const signature = await signer.signTypedData(
+      domain as any,
+      types as any,
+      message as any,
+    );
+    return signature;
+  }
+
+  if (method === "eth_sendTransaction") {
+    const { requestedAddress, transactionRequest } = parseEthSendTransactionInput(params);
+    const signer = getConnectedWalletSignerForTopic(event.topic, requestedAddress);
+    const txResponse = await signer.sendTransaction(transactionRequest);
+    return txResponse.hash;
+  }
+
+  if (method === "wallet_sendCalls") {
+    const { requestedAddress, chainIdValue, calls } = parseWalletSendCallsInput(params);
+    const signer = getConnectedWalletSignerForTopic(event.topic, requestedAddress);
+
+    const expectedChainID = getCurrentChainIDHex().toLowerCase();
+    if (isDefined(chainIdValue) && chainIdValue !== expectedChainID) {
+      throw new Error(
+        `wallet_sendCalls chain mismatch. request=${chainIdValue} wallet=${expectedChainID}`,
+      );
+    }
+
+    const id = createWalletSendCallsID();
+    const txResponses = await Promise.all(
+      calls.map((call) => {
+        return signer.sendTransaction({
+          to: call.to,
+          data: call.data,
+          value: call.value,
+        });
+      }),
+    );
+
+    const transactionHashes = txResponses.map((tx) => tx.hash);
+    walletSendCallsStatusByID[id] = {
+      id,
+      chainId: expectedChainID,
+      status: 100,
+      atomic: true,
+      version: "1.0.0",
+      transactionHashes,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    void Promise.all(
+      txResponses.map((tx) => {
+        return tx.wait().catch(() => undefined);
+      }),
+    )
+      .then((receipts) => {
+        const successfulReceipts = receipts.filter((receipt) => {
+          return isDefined(receipt);
+        }) as NonNullable<(typeof receipts)[number]>[];
+        const formattedReceipts = successfulReceipts.map((receipt) => {
+          return {
+            logs: receipt.logs.map((log) => ({
+              address: log.address,
+              data: log.data,
+              topics: [...log.topics],
+            })),
+            status: toRpcHex(receipt.status ?? 0),
+            blockHash: receipt.blockHash,
+            blockNumber: toRpcHex(receipt.blockNumber),
+            gasUsed: toRpcHex(receipt.gasUsed),
+            transactionHash: receipt.hash,
+          };
+        });
+
+        const hasFailure = successfulReceipts.some((receipt) => receipt.status !== 1);
+        walletSendCallsStatusByID[id] = {
+          ...walletSendCallsStatusByID[id],
+          receipts: formattedReceipts,
+          status: hasFailure ? 500 : 200,
+          updatedAt: Date.now(),
+        };
+      })
+      .catch(() => {
+        walletSendCallsStatusByID[id] = {
+          ...walletSendCallsStatusByID[id],
+          status: 500,
+          updatedAt: Date.now(),
+        };
+      });
+
+    return {
+      id,
+      capabilities: {
+        caip345: {
+          transactionHashes,
+        },
+      },
+    };
+  }
+
+  return undefined;
+};
+
 const buildApprovedRequestResult = (event: RuntimeSessionRequestEvent): Optional<unknown> => {
   const method = event.params.request.method;
+  const params = event.params.request.params;
+
+  if (method === "wallet_getCapabilities") {
+    return getWalletCapabilitiesResult(params);
+  }
+  if (method === "wallet_getCallsStatus") {
+    const id = parseWalletGetCallsStatusInput(params);
+    return getWalletSendCallsStatusResult(id);
+  }
+  if (method === "wallet_getPermissions") {
+    return getWalletPermissionsResult(event);
+  }
   if (method === "eth_chainId") {
     return getCurrentChainIDHex();
   }
   if (method === "net_version") {
     return getCurrentChainIDDecimal();
+  }
+  if (method === "web3_clientVersion") {
+    return getClientVersion();
+  }
+  if (method === "eth_coinbase") {
+    return getConnectedAddressForTopic(event.topic);
   }
   if (method === "eth_accounts" || method === "eth_requestAccounts") {
     return [getConnectedAddressForTopic(event.topic)];
@@ -926,7 +1488,10 @@ export const approveWalletConnectSessionRequest = async (requestID: number) => {
     },
   };
 
-  const approvedResult = buildApprovedRequestResult(requestEvent);
+  let approvedResult = buildApprovedRequestResult(requestEvent);
+  if (!isDefined(approvedResult)) {
+    approvedResult = await buildManualApprovedRequestResult(requestEvent);
+  }
   if (!isDefined(approvedResult)) {
     throw new Error(
       `Unsupported manual approval method: ${method}. Reject this request or add method handling.`,
