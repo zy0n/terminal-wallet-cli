@@ -2,6 +2,7 @@ import { isDefined } from "@railgun-community/shared-models";
 import {
   approveWalletConnectSessionProposal,
   disconnectWalletConnectSession,
+  getWalletConnectSessionSummary,
   getWalletConnectPendingSessionProposals,
   initializeWalletConnectKit,
   listWalletConnectSessions,
@@ -18,6 +19,13 @@ import { getSaltedPassword } from "../wallet/wallet-password";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Input, Select } = require("enquirer");
+
+const shortAddress = (address?: string) => {
+  if (!isDefined(address) || address.length < 12) {
+    return "n/a";
+  }
+  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+};
 
 const formatSessionLine = (session: {
   topic: string;
@@ -47,6 +55,45 @@ const printWalletConnectSessions = () => {
   sessions.forEach((session) => {
     console.log(formatSessionLine(session).grey);
   });
+};
+
+const buildWalletConnectCardHeader = async () => {
+  try {
+    await initializeWalletConnectKit();
+  } catch {
+    // show cached card state if WalletConnect runtime cannot initialize yet
+  }
+
+  const summary = getWalletConnectSessionSummary();
+  const sessions = listWalletConnectSessions().slice(0, 3);
+  const pendingCount = summary.pendingProposals;
+
+  const cardRows = [
+    `${"┌─ WalletConnect Console".grey} ${"(Interactive Card)".dim}`,
+    `${"│".grey} paired=${summary.paired.toString().green} disconnected=${summary.disconnected
+      .toString()
+      .grey} scoped=${summary.scoped.toString().cyan} pending=${pendingCount
+      .toString()
+      .yellow}`,
+    `${"│".grey} latest-account=${shortAddress(summary.latestConnectedAddress)}`,
+  ];
+
+  if (!sessions.length) {
+    cardRows.push(`${"│".grey} sessions: none`);
+  } else {
+    cardRows.push(`${"│".grey} recent sessions:`);
+    sessions.forEach((session) => {
+      const statusColor = session.status === "paired" ? "green" : "grey";
+      cardRows.push(
+        `${"│".grey} - ${session.topic.slice(0, 16)}... ${
+          session.status[statusColor]
+        } ${session.scopeID ? `scope=${session.scopeID}` : ""}`.trimEnd(),
+      );
+    });
+  }
+
+  cardRows.push(`${"└─".grey}`);
+  return cardRows.join("\n");
 };
 
 const printPendingWalletConnectProposals = async () => {
@@ -371,16 +418,41 @@ const runDisconnectPrompt = async () => {
 };
 
 export const runWalletConnectManagerPrompt = async (): Promise<void> => {
+  const cardHeader = await buildWalletConnectCardHeader();
+  const summary = getWalletConnectSessionSummary();
+
   const prompt = new Select({
-    header: " ",
-    message: "WalletConnect Tools",
+    header: cardHeader,
+    message: "WalletConnect Tools (interactive)",
     choices: [
-      { name: "pair", message: "Pair WalletConnect URI" },
-      { name: "list", message: "List WalletConnect Sessions" },
-      { name: "pending", message: "View Pending Session Proposals" },
-      { name: "approve", message: "Approve Pending Session Proposal" },
-      { name: "reject", message: "Reject Pending Session Proposal" },
-      { name: "disconnect", message: "Disconnect WalletConnect Session" },
+      {
+        name: "pair",
+        message: "Pair WalletConnect URI",
+      },
+      {
+        name: "pending",
+        message: `View Pending Session Proposals (${summary.pendingProposals})`,
+      },
+      {
+        name: "approve",
+        message: `Approve Pending Session Proposal (${summary.pendingProposals})`,
+        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
+      },
+      {
+        name: "reject",
+        message: `Reject Pending Session Proposal (${summary.pendingProposals})`,
+        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
+      },
+      {
+        name: "list",
+        message: `List WalletConnect Sessions (${summary.total})`,
+      },
+      {
+        name: "disconnect",
+        message: `Disconnect WalletConnect Session (${summary.paired} paired)`,
+        disabled: summary.paired === 0 ? "No paired sessions" : false,
+      },
+      { name: "refresh-card", message: "Refresh Card".cyan },
       { name: "exit-menu", message: "Go Back".grey },
     ],
     multiple: false,
@@ -397,6 +469,8 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
     switch (selection) {
       case "pair":
         await runPairPrompt();
+        break;
+      case "refresh-card":
         break;
       case "list":
         printWalletConnectSessions();
