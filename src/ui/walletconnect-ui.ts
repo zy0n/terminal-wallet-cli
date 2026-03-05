@@ -16,6 +16,11 @@ import {
   syncCurrentEphemeralWallet,
 } from "../wallet/ephemeral-wallet-manager";
 import { getSaltedPassword } from "../wallet/wallet-password";
+import {
+  getActiveStealthProfile,
+  listStealthProfiles,
+  setActiveStealthProfile,
+} from "../wallet/stealth-profile-manager";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Input, Select } = require("enquirer");
@@ -238,6 +243,10 @@ const runApprovePrompt = async () => {
         name: "ephemeral",
         message: `Ephemeral (${getCurrentKnownEphemeralState()?.currentAddress ?? "not synced"})`,
       },
+      {
+        name: "stealth-profile",
+        message: `Stealth Profile (${getActiveStealthProfile()?.name ?? "none active"})`,
+      },
       { name: "exit-menu", message: "Cancel".grey },
     ],
     multiple: false,
@@ -278,6 +287,44 @@ const runApprovePrompt = async () => {
     }
 
     approvalAddress = ephemeralAddress;
+  }
+
+  if (accountSelection === "stealth-profile") {
+    const profiles = listStealthProfiles();
+    if (!profiles.length) {
+      console.log("Approval canceled (no external stealth profiles configured).".yellow);
+      return;
+    }
+
+    const profilePrompt = new Select({
+      header: " ",
+      message: "Select external stealth profile",
+      choices: [
+        ...profiles.map((profile) => ({
+          name: profile.id,
+          message: `${profile.name} (${profile.accountAddress})${
+            profile.scopeID ? ` · scope=${profile.scopeID}` : ""
+          }`,
+        })),
+        { name: "exit-menu", message: "Cancel".grey },
+      ],
+      multiple: false,
+    });
+
+    const profileSelection = await profilePrompt.run().catch(confirmPromptCatch);
+    if (!profileSelection || profileSelection === "exit-menu") {
+      console.log("Approval canceled.".yellow);
+      return;
+    }
+
+    const selectedProfile = profiles.find((profile) => profile.id === profileSelection);
+    if (!isDefined(selectedProfile)) {
+      console.log("Approval canceled (profile not found).".yellow);
+      return;
+    }
+
+    setActiveStealthProfile(selectedProfile.id);
+    approvalAddress = selectedProfile.accountAddress;
   }
 
   const scopePrompt = new Input({

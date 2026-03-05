@@ -84,6 +84,18 @@ export type WalletConnectSession = {
   status: WalletConnectSessionState;
 };
 
+export type StealthProfile = {
+  id: string;
+  name: string;
+  accountAddress: string;
+  scopeID?: string;
+  slot?: number;
+  signerStrategyScopeID?: string;
+  createdAt: number;
+  updatedAt: number;
+  lastUsedAt?: number;
+};
+
 export type KeychainFile = {
   name: string;
   salt: string;
@@ -99,6 +111,8 @@ export type KeychainFile = {
   hidePrivateInfo?: boolean;
   customProviders?: CustomProviderMap;
   walletConnectSessions?: MapType<WalletConnectSession>;
+  stealthProfiles?: MapType<StealthProfile>;
+  activeStealthProfileID?: string;
   showSenderAddress?: boolean;
 };
 

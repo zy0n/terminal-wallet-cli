@@ -17,12 +17,20 @@ import {
 import { RailgunTransaction } from "../models/transaction-models";
 import { getSaltedPassword } from "../wallet/wallet-password";
 import {
+  getActiveStealthProfile,
+  getStealthProfile,
+  getStealthProfileSummary,
+  listStealthProfiles,
+  removeStealthProfile,
+  setActiveStealthProfile,
+  upsertStealthProfile,
+} from "../wallet/stealth-profile-manager";
+import {
   confirmPrompt,
   confirmPromptCatch,
   confirmPromptCatchRetry,
 } from "./confirm-ui";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Select, Input } = require("enquirer");
 
 const transactionChoices = Object.values(RailgunTransaction).map((name) => ({
@@ -106,7 +114,7 @@ const promptOptionalScopeSelection = async (): Promise<ScopeSelection> => {
 const formatKnownAddresses = () => {
   const known = getKnownEphemeralAddresses();
   if (known.length === 0) {
-    return "No known stealth accounts yet.".grey;
+    return "No known internal stealth accounts yet.".grey;
   }
 
   return known
@@ -119,7 +127,7 @@ const formatKnownAddresses = () => {
 const formatKnownScopes = () => {
   const scopes = listEphemeralSessionScopes();
   if (!scopes.length) {
-    return "No stealth scopes configured.".grey;
+    return "No internal stealth scopes configured.".grey;
   }
 
   return scopes
@@ -142,30 +150,407 @@ const formatKnownScopes = () => {
     .join("\n");
 };
 
-const getHeader = () => {
-  const state = getCurrentKnownEphemeralState();
-  const scopeCount = listEphemeralSessionScopes().length;
-  const strategyCount = listScopedEphemeralWalletDerivationStrategyScopeIDs().length;
-  if (!isDefined(state)) {
-    return [
-      "Stealth Account Manager",
-      `Scopes: ${scopeCount} | Signer Strategies: ${strategyCount}`,
-      "No stealth account state cached yet. Sync once to initialize.",
-    ].join("\n");
-  }
+const formatStealthProfileLine = (
+  profile: {
+    id: string;
+    name: string;
+    accountAddress: string;
+    scopeID?: string;
+    slot?: number;
+    signerStrategyScopeID?: string;
+    updatedAt: number;
+  },
+  activeProfileID?: string,
+) => {
+  const activeTag = profile.id === activeProfileID ? "[ACTIVE]".green : "";
+  const scopeTag = profile.scopeID ? `scope=${profile.scopeID}` : "scope=none";
+  const slotTag = isDefined(profile.slot) ? `slot=${profile.slot}` : "slot=none";
+  const signerTag = profile.signerStrategyScopeID
+    ? `signer=${profile.signerStrategyScopeID}`
+    : "signer=none";
+  const updatedAt = new Date(profile.updatedAt).toISOString();
 
   return [
-    "Stealth Account Manager",
-    `Current Slot: ${state.currentIndex}`,
-    `Current Stealth Address: ${state.currentAddress ?? "Unknown"}`,
-    `Known Slots: ${state.knownCount} | Scopes: ${scopeCount} | Signer Strategies: ${strategyCount}`,
-  ].join("\n");
+    `${profile.name}`.cyan,
+    shortAddress(profile.accountAddress),
+    scopeTag,
+    slotTag,
+    signerTag,
+    `updated=${updatedAt}`,
+    activeTag,
+  ]
+    .filter((part) => part.length > 0)
+    .join(" · ");
+};
+
+const printStealthProfiles = () => {
+  const summary = getStealthProfileSummary();
+  const profiles = listStealthProfiles();
+
+  if (!profiles.length) {
+    console.log("No external stealth profiles found.".yellow);
+    return;
+  }
+
+  console.log(
+    `Profiles=${summary.total} scoped=${summary.scoped} slotted=${summary.slotted} signer-bound=${summary.withSignerScope}`.grey,
+  );
+  profiles.forEach((profile) => {
+    console.log(formatStealthProfileLine(profile, summary.activeProfileID).grey);
+  });
+};
+
+const buildStealthCardHeader = () => {
+  const summary = getStealthProfileSummary();
+  const internalState = getCurrentKnownEphemeralState();
+  const profiles = listStealthProfiles().slice(0, 3);
+
+  const rows = [
+    `${"┌─ Stealth Account Manager".grey} ${"(Interactive Card)".dim}`,
+    `${"│".grey} external-profiles=${summary.total.toString().cyan} active=${
+      summary.activeProfileID ? "yes".green : "no".yellow
+    } scoped=${summary.scoped.toString().grey} slotted=${summary.slotted
+      .toString()
+      .grey}`,
+    `${"│".grey} active-account=${shortAddress(summary.activeAccountAddress)}`,
+    `${"│".grey} internal-railgun-slot=${internalState?.currentIndex ?? "n/a"} internal-address=${shortAddress(
+      internalState?.currentAddress,
+    )}`,
+  ];
+
+  if (!profiles.length) {
+    rows.push(`${"│".grey} recent profiles: none`);
+  } else {
+    rows.push(`${"│".grey} recent profiles:`);
+    profiles.forEach((profile) => {
+      const activeMark = summary.activeProfileID === profile.id ? "*".green : "-".grey;
+      rows.push(
+        `${"│".grey} ${activeMark} ${profile.name} ${shortAddress(profile.accountAddress)} ${
+          profile.scopeID ? `scope=${profile.scopeID}` : ""
+        }`.trimEnd(),
+      );
+    });
+  }
+
+  rows.push(`${"└─".grey}`);
+  return rows.join("\n");
+};
+
+const selectStealthProfileID = async (
+  message: string,
+): Promise<Optional<string>> => {
+  const profiles = listStealthProfiles();
+  const summary = getStealthProfileSummary();
+
+  if (!profiles.length) {
+    console.log("No external stealth profiles found.".yellow);
+    await confirmPromptCatchRetry("");
+    return undefined;
+  }
+
+  const prompt = new Select({
+    header: " ",
+    message,
+    choices: [
+      ...profiles.map((profile) => ({
+        name: profile.id,
+        message: formatStealthProfileLine(profile, summary.activeProfileID),
+      })),
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return undefined;
+  }
+
+  return selection;
+};
+
+const promptOptionalText = async (
+  message: string,
+  initial = "",
+): Promise<Optional<string>> => {
+  const prompt = new Input({
+    header: " ",
+    message,
+    initial,
+  });
+
+  const value = (await prompt.run().catch(confirmPromptCatch)) as
+    | string
+    | undefined;
+
+  if (!isDefined(value)) {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  if (!normalized.length) {
+    return undefined;
+  }
+  return normalized;
+};
+
+const promptStealthProfileInput = async (
+  existing?: {
+    id: string;
+    name: string;
+    accountAddress: string;
+    scopeID?: string;
+    slot?: number;
+    signerStrategyScopeID?: string;
+  },
+) => {
+  const namePrompt = new Input({
+    header: " ",
+    message: "Profile name",
+    initial: existing?.name ?? "",
+    validate: (value: string) => value.trim().length > 0,
+  });
+
+  const nameInput = (await namePrompt.run().catch(confirmPromptCatch)) as
+    | string
+    | undefined;
+  if (!isDefined(nameInput)) {
+    return undefined;
+  }
+
+  const addressPrompt = new Input({
+    header: " ",
+    message: "Account address (0x...)",
+    initial: existing?.accountAddress ?? "",
+    validate: (value: string) => /^0x[0-9a-fA-F]{40}$/.test(value.trim()),
+  });
+
+  const addressInput = (await addressPrompt.run().catch(confirmPromptCatch)) as
+    | string
+    | undefined;
+  if (!isDefined(addressInput)) {
+    return undefined;
+  }
+
+  const scopeInput = await promptOptionalText(
+    "Optional scope ID (blank for none)",
+    existing?.scopeID ?? "",
+  );
+
+  const slotPrompt = new Input({
+    header: " ",
+    message: "Optional slot number (blank for none)",
+    initial: isDefined(existing?.slot) ? String(existing?.slot) : "",
+    validate: (value: string) => {
+      if (!value.trim().length) {
+        return true;
+      }
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 0;
+    },
+  });
+
+  const slotInput = (await slotPrompt.run().catch(confirmPromptCatch)) as
+    | string
+    | undefined;
+  if (!isDefined(slotInput)) {
+    return undefined;
+  }
+  const slot = slotInput.trim().length ? Number(slotInput) : undefined;
+
+  const signerStrategyScopeID = await promptOptionalText(
+    "Optional signer strategy scope ID (blank for none)",
+    existing?.signerStrategyScopeID ?? "",
+  );
+
+  return {
+    id: existing?.id,
+    name: nameInput.trim(),
+    accountAddress: addressInput.trim(),
+    scopeID: scopeInput,
+    slot,
+    signerStrategyScopeID,
+  };
+};
+
+const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
+  const summary = getStealthProfileSummary();
+  const prompt = new Select({
+    header: buildStealthCardHeader(),
+    message: "External Stealth Profiles",
+    choices: [
+      {
+        name: "list-profiles",
+        message: `List Profiles (${summary.total})`,
+      },
+      {
+        name: "create-profile",
+        message: "Create Profile",
+      },
+      {
+        name: "edit-profile",
+        message: "Edit Profile",
+        disabled: summary.total === 0 ? "No profiles" : false,
+      },
+      {
+        name: "set-active",
+        message: "Set Active Profile",
+        disabled: summary.total === 0 ? "No profiles" : false,
+      },
+      {
+        name: "remove-profile",
+        message: "Remove Profile",
+        disabled: summary.total === 0 ? "No profiles" : false,
+      },
+      {
+        name: "activate-profile-signer",
+        message: "Activate Active Profile Signer Strategy",
+        disabled:
+          !summary.activeProfileID || !summary.withSignerScope
+            ? "No active signer-bound profile"
+            : false,
+      },
+      {
+        name: "refresh-card",
+        message: "Refresh Card".cyan,
+      },
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return;
+  }
+
+  switch (selection) {
+    case "list-profiles": {
+      printStealthProfiles();
+      await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "create-profile": {
+      const profileInput = await promptStealthProfileInput();
+      if (!isDefined(profileInput)) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const created = upsertStealthProfile(profileInput);
+      console.log(`Created profile ${created.name} (${created.id}).`.green);
+      await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "edit-profile": {
+      const profileID = await selectStealthProfileID("Select profile to edit");
+      if (!isDefined(profileID)) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const profile = getStealthProfile(profileID);
+      if (!isDefined(profile)) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const profileInput = await promptStealthProfileInput(profile);
+      if (!isDefined(profileInput)) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const updated = upsertStealthProfile({
+        ...profileInput,
+        id: profile.id,
+      });
+      console.log(`Updated profile ${updated.name} (${updated.id}).`.green);
+      await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "set-active": {
+      const profileID = await selectStealthProfileID("Set active profile");
+      if (!isDefined(profileID)) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const active = setActiveStealthProfile(profileID);
+      console.log(`Active profile set to ${active.name} (${active.id}).`.green);
+      await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "remove-profile": {
+      const profileID = await selectStealthProfileID("Remove profile");
+      if (!isDefined(profileID)) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const profile = getStealthProfile(profileID);
+      if (!isDefined(profile)) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const confirmed = await confirmPrompt(
+        `Remove external stealth profile ${profile.name}?`,
+        { initial: false },
+      );
+      if (!confirmed) {
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const removed = removeStealthProfile(profileID);
+      console.log(
+        removed
+          ? `Removed profile ${profile.name} (${profileID}).`.green
+          : `Profile ${profileID} was not found.`.yellow,
+      );
+      await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "activate-profile-signer": {
+      const activeProfile = getActiveStealthProfile();
+      if (!isDefined(activeProfile)) {
+        console.log("No active stealth profile selected.".yellow);
+        await confirmPromptCatchRetry("");
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      if (!isDefined(activeProfile.signerStrategyScopeID)) {
+        console.log("Active profile has no signer strategy scope ID.".yellow);
+        await confirmPromptCatchRetry("");
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      const strategyScopeID = activeProfile.signerStrategyScopeID;
+      const hasScopedStrategy = hasScopedEphemeralWalletDerivationStrategy(
+        strategyScopeID,
+      );
+      if (!hasScopedStrategy) {
+        console.log(
+          `No scoped signer strategy registered for ${strategyScopeID}.`.yellow,
+        );
+        await confirmPromptCatchRetry("");
+        return runExternalStealthProfileManagerPrompt();
+      }
+
+      activateScopedEphemeralWalletDerivationStrategy(strategyScopeID);
+      console.log(
+        `Activated signer strategy scope ${strategyScopeID} for active profile ${activeProfile.name}.`
+          .green,
+      );
+      await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "refresh-card": {
+      return runExternalStealthProfileManagerPrompt();
+    }
+    default: {
+      return;
+    }
+  }
 };
 
 const promptAddressLookup = async () => {
   const prompt = new Input({
     header: " ",
-    message: "Enter stealth address to lookup slot",
+    message: "Enter internal stealth address to lookup slot",
     validate: (value: string) => {
       return value.startsWith("0x") && value.length === 42;
     },
@@ -180,7 +565,7 @@ const promptAddressLookup = async () => {
 
   const index = getKnownEphemeralIndexForAddress(address);
   if (!isDefined(index)) {
-    console.log("Address not found in known stealth cache.".yellow);
+    console.log("Address not found in known internal stealth cache.".yellow);
   } else {
     console.log(`Known slot for ${address}: ${index}`.green);
   }
@@ -239,10 +624,10 @@ const promptAndApplyScopePolicy = async () => {
   await confirmPromptCatchRetry("");
 };
 
-const runScopeManagerPrompt = async (): Promise<void> => {
+const runInternalScopeManagerPrompt = async (): Promise<void> => {
   const prompt = new Select({
-    header: ["Stealth Scope Manager", formatKnownScopes()].join("\n\n"),
-    message: "Stealth Scope Tools",
+    header: ["Internal Railgun Scope Manager", formatKnownScopes()].join("\n\n"),
+    message: "Internal Scope Tools",
     choices: [
       { name: "list", message: "List Scopes" },
       { name: "upsert-policy", message: "Create/Update Scope Ratchet Policy" },
@@ -263,24 +648,24 @@ const runScopeManagerPrompt = async (): Promise<void> => {
     case "list": {
       console.log(formatKnownScopes());
       await confirmPromptCatchRetry("");
-      return runScopeManagerPrompt();
+      return runInternalScopeManagerPrompt();
     }
     case "upsert-policy": {
       await promptAndApplyScopePolicy();
-      return runScopeManagerPrompt();
+      return runInternalScopeManagerPrompt();
     }
     case "remove": {
       const scopeSelection = await promptOptionalScopeSelection();
       if (scopeSelection.aborted || !isDefined(scopeSelection.scopeID)) {
-        return runScopeManagerPrompt();
+        return runInternalScopeManagerPrompt();
       }
 
       const confirmed = await confirmPrompt(
-        `Remove stealth scope ${scopeSelection.scopeID}?`,
+        `Remove internal scope ${scopeSelection.scopeID}?`,
         { initial: false },
       );
       if (!confirmed) {
-        return runScopeManagerPrompt();
+        return runInternalScopeManagerPrompt();
       }
 
       const removed = removeEphemeralSessionScope(scopeSelection.scopeID);
@@ -290,12 +675,12 @@ const runScopeManagerPrompt = async (): Promise<void> => {
           : `Scope ${scopeSelection.scopeID} was not found.`.yellow,
       );
       await confirmPromptCatchRetry("");
-      return runScopeManagerPrompt();
+      return runInternalScopeManagerPrompt();
     }
     case "activate-signer": {
       const scopeSelection = await promptOptionalScopeSelection();
       if (scopeSelection.aborted || !isDefined(scopeSelection.scopeID)) {
-        return runScopeManagerPrompt();
+        return runInternalScopeManagerPrompt();
       }
 
       const hasStrategy = hasScopedEphemeralWalletDerivationStrategy(
@@ -307,7 +692,7 @@ const runScopeManagerPrompt = async (): Promise<void> => {
             .yellow,
         );
         await confirmPromptCatchRetry("");
-        return runScopeManagerPrompt();
+        return runInternalScopeManagerPrompt();
       }
 
       activateScopedEphemeralWalletDerivationStrategy(scopeSelection.scopeID);
@@ -315,7 +700,7 @@ const runScopeManagerPrompt = async (): Promise<void> => {
         `Activated scoped signer strategy for ${scopeSelection.scopeID}.`.green,
       );
       await confirmPromptCatchRetry("");
-      return runScopeManagerPrompt();
+      return runInternalScopeManagerPrompt();
     }
     case "show-strategy-scopes": {
       const strategyScopes = listScopedEphemeralWalletDerivationStrategyScopeIDs();
@@ -325,7 +710,7 @@ const runScopeManagerPrompt = async (): Promise<void> => {
         console.log(strategyScopes.map((scopeID) => `${scopeID}`.cyan).join("\n"));
       }
       await confirmPromptCatchRetry("");
-      return runScopeManagerPrompt();
+      return runInternalScopeManagerPrompt();
     }
     default: {
       return;
@@ -333,17 +718,22 @@ const runScopeManagerPrompt = async (): Promise<void> => {
   }
 };
 
-export const runEphemeralManagerPrompt = async (): Promise<void> => {
+const runInternalStealthToolsPrompt = async (): Promise<void> => {
+  const state = getCurrentKnownEphemeralState();
   const prompt = new Select({
-    header: getHeader(),
-    message: "Stealth Account Tools",
+    header: [
+      "Internal Railgun Stealth Tools",
+      `Current Slot: ${state?.currentIndex ?? "n/a"}`,
+      `Current Address: ${state?.currentAddress ?? "unknown"}`,
+    ].join("\n"),
+    message: "Internal Stealth Tools",
     choices: [
-      { name: "sync-current", message: "Sync Current Stealth Account" },
-      { name: "manual-ratchet", message: "Ratchet to Next Stealth Slot" },
-      { name: "set-index", message: "Set Specific Stealth Slot" },
-      { name: "show-known", message: "Show Known Stealth Slots" },
-      { name: "lookup-index", message: "Lookup Slot by Address" },
-      { name: "manage-scopes", message: "Manage Stealth Scopes & Policies" },
+      { name: "sync-current", message: "Sync Current Internal Stealth Account" },
+      { name: "manual-ratchet", message: "Ratchet to Next Internal Stealth Slot" },
+      { name: "set-index", message: "Set Specific Internal Stealth Slot" },
+      { name: "show-known", message: "Show Known Internal Stealth Slots" },
+      { name: "lookup-index", message: "Lookup Internal Slot by Address" },
+      { name: "manage-scopes", message: "Manage Internal Scopes & Policies" },
       { name: "exit-menu", message: "Go Back".grey },
     ],
     multiple: false,
@@ -358,43 +748,43 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
     case "sync-current": {
       const scopeSelection = await promptOptionalScopeSelection();
       if (scopeSelection.aborted) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
 
       const encryptionKey = await getSaltedPassword();
       if (!isDefined(encryptionKey)) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
       const synced = await syncCurrentEphemeralWallet(
         encryptionKey,
         scopeSelection.scopeID,
       );
       if (!isDefined(synced)) {
-        console.log("Failed to sync stealth account.".yellow);
+        console.log("Failed to sync internal stealth account.".yellow);
       } else {
         console.log(
           `Synced slot ${synced.currentIndex}: ${synced.currentAddress}`.green,
         );
       }
       await confirmPromptCatchRetry("");
-      return runEphemeralManagerPrompt();
+      return runInternalStealthToolsPrompt();
     }
     case "manual-ratchet": {
       const scopeSelection = await promptOptionalScopeSelection();
       if (scopeSelection.aborted) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
 
       const encryptionKey = await getSaltedPassword();
       if (!isDefined(encryptionKey)) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
       const ratcheted = await manualRatchetEphemeralWallet(
         encryptionKey,
         scopeSelection.scopeID,
       );
       if (!isDefined(ratcheted)) {
-        console.log("Failed to ratchet stealth account.".yellow);
+        console.log("Failed to ratchet internal stealth account.".yellow);
       } else {
         console.log(
           `Ratcheted to slot ${ratcheted.currentIndex}: ${ratcheted.currentAddress}`
@@ -402,22 +792,22 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
         );
       }
       await confirmPromptCatchRetry("");
-      return runEphemeralManagerPrompt();
+      return runInternalStealthToolsPrompt();
     }
     case "set-index": {
       const scopeSelection = await promptOptionalScopeSelection();
       if (scopeSelection.aborted) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
 
       const encryptionKey = await getSaltedPassword();
       if (!isDefined(encryptionKey)) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
 
       const indexPrompt = new Input({
         header: " ",
-        message: "Enter stealth slot index (0 or greater)",
+        message: "Enter internal stealth slot index (0 or greater)",
         validate: (value: string) => {
           const parsed = Number(value);
           return Number.isInteger(parsed) && parsed >= 0;
@@ -428,16 +818,16 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
         | string
         | undefined;
       if (!isDefined(indexInput)) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
 
       const index = Number(indexInput);
       const confirmSetIndex = await confirmPrompt(
-        `Set stealth slot to ${index}?`,
+        `Set internal stealth slot to ${index}?`,
         { initial: false },
       );
       if (!confirmSetIndex) {
-        return runEphemeralManagerPrompt();
+        return runInternalStealthToolsPrompt();
       }
 
       const updated = await setEphemeralWalletIndex(
@@ -446,13 +836,13 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
         scopeSelection.scopeID,
       ).catch(
         (err) => {
-          console.log(`Failed to set index: ${(err as Error).message}`.yellow);
+          console.log(`Failed to set slot: ${(err as Error).message}`.yellow);
           return undefined;
         },
       );
 
       if (!isDefined(updated)) {
-        console.log("Failed to set stealth slot.".yellow);
+        console.log("Failed to set internal stealth slot.".yellow);
       } else {
         console.log(
           `Set slot ${updated.currentIndex}: ${updated.currentAddress}`.green,
@@ -460,19 +850,65 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
       }
 
       await confirmPromptCatchRetry("");
-      return runEphemeralManagerPrompt();
+      return runInternalStealthToolsPrompt();
     }
     case "show-known": {
       console.log(formatKnownAddresses());
       await confirmPromptCatchRetry("");
-      return runEphemeralManagerPrompt();
+      return runInternalStealthToolsPrompt();
     }
     case "lookup-index": {
       await promptAddressLookup();
-      return runEphemeralManagerPrompt();
+      return runInternalStealthToolsPrompt();
     }
     case "manage-scopes": {
-      await runScopeManagerPrompt();
+      await runInternalScopeManagerPrompt();
+      return runInternalStealthToolsPrompt();
+    }
+    default: {
+      return;
+    }
+  }
+};
+
+export const runEphemeralManagerPrompt = async (): Promise<void> => {
+  const summary = getStealthProfileSummary();
+  const prompt = new Select({
+    header: buildStealthCardHeader(),
+    message: "Stealth Account Tools",
+    choices: [
+      {
+        name: "external-profiles",
+        message: `Manage External Stealth Profiles (${summary.total})`,
+      },
+      {
+        name: "internal-tools",
+        message: "Internal Railgun Stealth Tools",
+      },
+      {
+        name: "refresh-card",
+        message: "Refresh Card".cyan,
+      },
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return;
+  }
+
+  switch (selection) {
+    case "external-profiles": {
+      await runExternalStealthProfileManagerPrompt();
+      return runEphemeralManagerPrompt();
+    }
+    case "internal-tools": {
+      await runInternalStealthToolsPrompt();
+      return runEphemeralManagerPrompt();
+    }
+    case "refresh-card": {
       return runEphemeralManagerPrompt();
     }
     default: {
