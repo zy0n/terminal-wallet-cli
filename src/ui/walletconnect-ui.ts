@@ -38,14 +38,17 @@ import {
 import { getSaltedPassword } from "../wallet/wallet-password";
 import { getCurrentNetwork } from "../engine/engine";
 import { getTokenInfo } from "../balance/token-util";
-import { getWrappedTokenInfoForChain } from "../network/network-util";
 import { getProviderForChain } from "../network/network-util";
 import { getChainForName } from "../network/network-util";
 import {
   getCrossContract7702GasEstimate,
   getProvedCrossContract7702Transaction,
 } from "../transaction/private/cross-contract-7702";
-import { runFeeTokenSelector } from "./token-ui";
+import {
+  runFeeTokenSelector,
+  tokenAmountSelectionPrompt,
+  tokenSelectionPrompt,
+} from "./token-ui";
 import { sendBroadcastedTransaction } from "../transaction/transaction-builder";
 import { RailgunTransaction } from "../models/transaction-models";
 import { WalletConnectBundledCall } from "../models/wallet-models";
@@ -954,6 +957,69 @@ const getTotalBundledCallNativeValue = (calls: WalletConnectBundledCall[]): bigi
   }, 0n);
 };
 
+const promptUnshieldERC20AmountsFromPrivateSelection = async (
+  chainName: ReturnType<typeof getCurrentNetwork>,
+): Promise<RailgunERC20Amount[]> => {
+  const shouldAdd = await confirmPrompt(
+    "Add private tokens to unshield for this bundle?",
+    { initial: false },
+  );
+  if (!shouldAdd) {
+    return [];
+  }
+
+  const selectedBalances = await tokenSelectionPrompt(
+    chainName,
+    "Select Private Tokens to Unshield",
+    true,
+    false,
+  );
+  if (!isDefined(selectedBalances) || !selectedBalances.length) {
+    return [];
+  }
+
+  const selectedAmounts = await tokenAmountSelectionPrompt(
+    selectedBalances,
+    false,
+    false,
+    false,
+    getCurrentRailgunAddress(),
+  );
+
+  return selectedAmounts.map((entry) => ({
+    tokenAddress: entry.tokenAddress,
+    amount: entry.selectedAmount,
+  }));
+};
+
+const promptReshieldERC20RecipientsFromPrivateSelection = async (
+  chainName: ReturnType<typeof getCurrentNetwork>,
+): Promise<RailgunERC20Recipient[]> => {
+  const shouldAdd = await confirmPrompt(
+    "Add tokens to re-shield by token address?",
+    { initial: false },
+  );
+  if (!shouldAdd) {
+    return [];
+  }
+
+  const selectedBalances = await tokenSelectionPrompt(
+    chainName,
+    "Select Tokens to Re-shield (token-address only)",
+    true,
+    false,
+  );
+  if (!isDefined(selectedBalances) || !selectedBalances.length) {
+    return [];
+  }
+
+  const recipientAddress = getCurrentRailgunAddress();
+  return selectedBalances.map((entry: any) => ({
+    tokenAddress: entry.tokenAddress,
+    recipientAddress,
+  }));
+};
+
 const runBundledCallPreflight = async (
   chainName: ReturnType<typeof getCurrentNetwork>,
   calls: WalletConnectBundledCall[],
@@ -1354,33 +1420,20 @@ const buildAndSendCrossContract7702FromBundle = async (
     return undefined;
   }
 
-  const unshieldERC20Amounts = await parseERC20AmountArray();
-  let shieldERC20Recipients = await parseERC20RecipientArray();
-  const currentRailgunAddress = getCurrentRailgunAddress();
-
   const totalNativeCallValue = getTotalBundledCallNativeValue(selectedBundle.calls);
   if (totalNativeCallValue > 0n) {
-    const wrappedTokenInfo = getWrappedTokenInfoForChain(chainName);
-    const wrappedTokenAddress = wrappedTokenInfo.wrappedAddress.toLowerCase();
-    const existingWrappedUnshield = unshieldERC20Amounts.find((entry) => {
-      return entry.tokenAddress.toLowerCase() === wrappedTokenAddress;
-    });
-
-    if (!isDefined(existingWrappedUnshield)) {
-      unshieldERC20Amounts.push({
-        tokenAddress: wrappedTokenAddress,
-        amount: totalNativeCallValue,
-      });
-      console.log(
-        `Detected bundled call value; auto-adding unshield ${wrappedTokenInfo.wrappedSymbol}=${totalNativeCallValue.toString()} for relay value forwarding.`.yellow,
-      );
-    } else if (existingWrappedUnshield.amount < totalNativeCallValue) {
-      existingWrappedUnshield.amount = totalNativeCallValue;
-      console.log(
-        `Adjusted ${wrappedTokenInfo.wrappedSymbol} unshield to ${totalNativeCallValue.toString()} to satisfy bundled call value.`.yellow,
-      );
-    }
+    console.log(
+      `Bundled calls include native value (${totalNativeCallValue.toString()} wei). Select unshield token amounts manually if needed for this flow.`.yellow,
+    );
   }
+
+  const unshieldERC20Amounts = await promptUnshieldERC20AmountsFromPrivateSelection(
+    chainName,
+  );
+  let shieldERC20Recipients = await promptReshieldERC20RecipientsFromPrivateSelection(
+    chainName,
+  );
+  const currentRailgunAddress = getCurrentRailgunAddress();
 
   let {
     unshieldNFTAmounts,
