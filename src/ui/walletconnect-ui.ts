@@ -30,11 +30,16 @@ import {
 } from "../wallet/wallet-util";
 import {
   getCurrentKnownEphemeralState,
+  setEphemeralWalletIndex,
+  setCurrentEphemeralWalletSession,
   syncCurrentEphemeralWallet,
 } from "../wallet/ephemeral-wallet-manager";
 import { getSaltedPassword } from "../wallet/wallet-password";
 import { getCurrentNetwork } from "../engine/engine";
 import { getTokenInfo } from "../balance/token-util";
+import { getWrappedTokenInfoForChain } from "../network/network-util";
+import { getProviderForChain } from "../network/network-util";
+import { getRailgunRelayAdaptAddressForChain } from "../network/network-util";
 import {
   getCrossContract7702GasEstimate,
   getProvedCrossContract7702Transaction,
@@ -490,10 +495,240 @@ const getConnectedAccountContext = (topic: string): {
   };
 };
 
+const getRequestedFromAddressForRequest = (
+  method: string,
+  params: unknown,
+): Optional<string> => {
+  if (method === "eth_sendTransaction") {
+    if (!Array.isArray(params) || params.length < 1) {
+      return undefined;
+    }
+    const txLike = params[0] as Record<string, unknown>;
+    const from = typeof txLike?.from === "string" ? txLike.from.trim().toLowerCase() : "";
+    return isHexAddress(from) ? from : undefined;
+  }
+
+  if (method === "wallet_sendCalls") {
+    const root = Array.isArray(params) ? params[0] : params;
+    const from = typeof (root as any)?.from === "string"
+      ? ((root as any).from as string).trim().toLowerCase()
+      : "";
+    return isHexAddress(from) ? from : undefined;
+  }
+
+  return undefined;
+};
+
+const getSigningContextForRequest = (
+  topicContext: { connectedAddress?: string; type: ConnectedAccountType },
+  method: string,
+  params: unknown,
+): { connectedAddress?: string; type: ConnectedAccountType } => {
+  const requestedFrom = getRequestedFromAddressForRequest(method, params);
+  if (!isDefined(requestedFrom)) {
+    return topicContext;
+  }
+
+  return {
+    connectedAddress: requestedFrom,
+    type: getConnectedAccountTypeForAddress(requestedFrom),
+  };
+};
+
 const getCapturedBundleForRequest = (requestID: number, topic: string) => {
   return listWalletConnectCapturedBundles().find((bundle) => {
     return bundle.requestId === requestID && bundle.topic === topic;
   });
+};
+
+const getStealthSignerScopeForAddress = (connectedAddress: string) => {
+  const normalized = connectedAddress.toLowerCase();
+  const profile = listStealthProfiles().find((item) => {
+    return item.accountAddress?.toLowerCase() === normalized;
+  });
+  if (!isDefined(profile)) {
+    return undefined;
+  }
+
+  if (isDefined(profile.signerStrategyScopeID) && profile.signerStrategyScopeID.trim().length) {
+    return profile.signerStrategyScopeID.trim();
+  }
+  if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
+    return profile.scopeID.trim();
+  }
+  if (isDefined(profile.slot)) {
+    return `slot-${profile.slot}`;
+  }
+
+  return undefined;
+};
+
+const getStealthSignerScopeCandidatesForAddress = (connectedAddress: string) => {
+  const normalized = connectedAddress.toLowerCase();
+  const profile = listStealthProfiles().find((item) => {
+    return item.accountAddress?.toLowerCase() === normalized;
+  });
+  if (!isDefined(profile)) {
+    return [] as string[];
+  }
+
+  const candidates: string[] = [];
+  const add = (value?: string) => {
+    if (!isDefined(value)) {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed.length) {
+      return;
+    }
+    if (!candidates.includes(trimmed)) {
+      candidates.push(trimmed);
+    }
+  };
+
+  add(profile.signerStrategyScopeID);
+  add(profile.scopeID);
+  if (isDefined(profile.slot)) {
+    add(`slot-${profile.slot}`);
+  }
+
+  if (isDefined(profile.signerStrategyScopeID)) {
+    const maybeNumber = Number(profile.signerStrategyScopeID);
+    if (Number.isInteger(maybeNumber) && maybeNumber >= 0) {
+      add(`slot-${maybeNumber}`);
+    }
+  }
+
+  return candidates;
+};
+
+const getStealthProfileForAddress = (connectedAddress: string) => {
+  const normalized = connectedAddress.toLowerCase();
+  return listStealthProfiles().find((item) => {
+    return item.accountAddress?.toLowerCase() === normalized;
+  });
+};
+
+const getPreferredScopeForProfile = (profile: {
+  scopeID?: string;
+  signerStrategyScopeID?: string;
+  slot?: number;
+}) => {
+  if (isDefined(profile.signerStrategyScopeID) && profile.signerStrategyScopeID.trim().length) {
+    return profile.signerStrategyScopeID.trim();
+  }
+  if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
+    return profile.scopeID.trim();
+  }
+  if (isDefined(profile.slot)) {
+    return `slot-${profile.slot}`;
+  }
+  return undefined;
+};
+
+const prepareSignerForConnectedSessionAddress = async (context: {
+  connectedAddress?: string;
+  type: ConnectedAccountType;
+}) => {
+  if (!isDefined(context.connectedAddress)) {
+    throw new Error("Connected session address is missing.");
+  }
+
+  let resolvedAddress: Optional<string>;
+
+  if (context.type === "ephemeral") {
+    const encryptionKey = await getSaltedPassword();
+    if (!isDefined(encryptionKey)) {
+      throw new Error("Missing wallet password for ephemeral signer sync.");
+    }
+    const session = await setCurrentEphemeralWalletSession(encryptionKey);
+    resolvedAddress = session?.currentAddress?.toLowerCase();
+  }
+
+  if (context.type === "stealth") {
+    const encryptionKey = await getSaltedPassword();
+    if (!isDefined(encryptionKey)) {
+      throw new Error("Missing wallet password for stealth signer sync.");
+    }
+
+    const stealthProfile = getStealthProfileForAddress(context.connectedAddress);
+    const scopeCandidates = getStealthSignerScopeCandidatesForAddress(
+      context.connectedAddress,
+    );
+    let matchedScope: Optional<string>;
+
+    const profileSlot = stealthProfile?.slot;
+    if (typeof profileSlot === "number") {
+      for (const scopeID of scopeCandidates) {
+        const indexed = await setEphemeralWalletIndex(
+          encryptionKey,
+          profileSlot,
+          scopeID,
+        );
+        const indexedAddress = indexed?.currentAddress?.toLowerCase();
+        if (indexedAddress === context.connectedAddress.toLowerCase()) {
+          matchedScope = scopeID;
+          resolvedAddress = indexedAddress;
+          await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+          break;
+        }
+      }
+
+      if (!isDefined(matchedScope)) {
+        const indexed = await setEphemeralWalletIndex(
+          encryptionKey,
+          profileSlot,
+        );
+        const indexedAddress = indexed?.currentAddress?.toLowerCase();
+        if (indexedAddress === context.connectedAddress.toLowerCase()) {
+          matchedScope = "<slot-default>";
+          resolvedAddress = indexedAddress;
+          await setCurrentEphemeralWalletSession(encryptionKey);
+        }
+      }
+    }
+
+    if (!isDefined(matchedScope)) {
+      for (const scopeID of scopeCandidates) {
+        const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+        const currentAddress = session?.currentAddress?.toLowerCase();
+        if (currentAddress === context.connectedAddress.toLowerCase()) {
+          matchedScope = scopeID;
+          resolvedAddress = currentAddress;
+          break;
+        }
+      }
+    }
+
+    if (!isDefined(matchedScope)) {
+      const fallback = await setCurrentEphemeralWalletSession(encryptionKey);
+      const fallbackAddress = fallback?.currentAddress?.toLowerCase();
+      if (fallbackAddress === context.connectedAddress.toLowerCase()) {
+        matchedScope = "<default>";
+        resolvedAddress = fallbackAddress;
+      }
+    }
+
+    if (isDefined(matchedScope)) {
+      console.log(`Stealth signer session matched via scope ${matchedScope}.`.grey);
+    }
+  }
+
+  const connectedAddress = context.connectedAddress.toLowerCase();
+  if (
+    (context.type === "ephemeral" || context.type === "stealth")
+    && resolvedAddress !== connectedAddress
+  ) {
+    if (context.type === "stealth") {
+      const scopeID = getStealthSignerScopeForAddress(connectedAddress);
+      throw new Error(
+        `Connected stealth address ${connectedAddress} was not resolved by stealth signer session sync. Update this stealth profile signer scope${isDefined(scopeID) ? ` (currently ${scopeID})` : ""} and resync signer session.`,
+      );
+    }
+    throw new Error(
+      `Connected address ${connectedAddress} was not resolved by signer session sync.`,
+    );
+  }
 };
 
 const deriveNFTActionsFromBundledCalls = (
@@ -577,6 +812,68 @@ const deriveNFTActionsFromBundledCalls = (
   return { unshieldNFTAmounts, shieldNFTRecipients };
 };
 
+const parseBundledCallValueToBigInt = (value: string): bigint => {
+  const trimmed = value?.trim?.() ?? "";
+  if (!trimmed.length) {
+    return 0n;
+  }
+  if (/^0x[0-9a-fA-F]+$/.test(trimmed)) {
+    return BigInt(trimmed);
+  }
+  if (/^[0-9]+$/.test(trimmed)) {
+    return BigInt(trimmed);
+  }
+  return 0n;
+};
+
+const getTotalBundledCallNativeValue = (calls: WalletConnectBundledCall[]): bigint => {
+  return calls.reduce((total, call) => {
+    return total + parseBundledCallValueToBigInt(call.value);
+  }, 0n);
+};
+
+const runBundledCallPreflight = async (
+  chainName: ReturnType<typeof getCurrentNetwork>,
+  calls: WalletConnectBundledCall[],
+  fromAddress?: string,
+  label = "preflight",
+): Promise<boolean> => {
+  const provider = getProviderForChain(chainName) as any;
+  let allPassed = true;
+  console.log('calls', calls)
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index];
+    try {
+      await provider.call({
+        from: fromAddress,
+        to: call.to,
+        data: call.data,
+        value: parseBundledCallValueToBigInt(call.value),
+      });
+    } catch (error) {
+      allPassed = false;
+      const err = error as any;
+      const reason =
+        err?.shortMessage
+        ?? err?.reason
+        ?? err?.error?.message
+        ?? err?.message
+        ?? "unknown call revert";
+      console.log(
+        `${label} failed at call index ${index}: ${reason}`.red,
+      );
+    }
+  }
+
+  if (!allPassed) {
+    console.log(
+      `One or more bundled calls failed ${label} simulation. Review failing call index(es) before generating/sending 7702 tx.`.yellow,
+    );
+  }
+
+  return allPassed;
+};
+
 const runApproveRequestPrompt = async () => {
   const requestID = await selectPendingRequestID();
   if (!isDefined(requestID)) {
@@ -617,7 +914,12 @@ const runApproveRequestPrompt = async () => {
     return;
   }
 
-  const context = getConnectedAccountContext(selected.topic);
+  const topicContext = getConnectedAccountContext(selected.topic);
+  const context = getSigningContextForRequest(
+    topicContext,
+    selected.method,
+    selected.params,
+  );
   if (
     isTxExecutionMethod(selected.method)
     && (context.type === "ephemeral" || context.type === "stealth")
@@ -631,6 +933,32 @@ const runApproveRequestPrompt = async () => {
 
     const gasBalance = await getGasBalanceForAddress(context.connectedAddress);
     const hasEthBalance = gasBalance > 0n;
+
+    const capturedBundle = getCapturedBundleForRequest(selected.id, selected.topic);
+    const bundleNativeValueTotal = (capturedBundle?.calls ?? []).reduce((total, call) => {
+      const rawValue = call.value?.trim?.() ?? "";
+      if (/^0x[0-9a-fA-F]+$/.test(rawValue)) {
+        return total + BigInt(rawValue);
+      }
+      if (/^[0-9]+$/.test(rawValue)) {
+        return total + BigInt(rawValue);
+      }
+      return total;
+    }, 0n);
+
+    if (hasEthBalance && bundleNativeValueTotal > 0n) {
+      console.log(
+        "Detected non-zero call value and available account ETH; routing via public-send so value is funded by connected signer.".yellow,
+      );
+
+      await prepareSignerForConnectedSessionAddress(context);
+
+      const approved = await approveWalletConnectSessionRequest(selected.id);
+      console.log(
+        `Approved request #${approved.id} (${approved.method}) on topic ${approved.topic} via public-send.`.green,
+      );
+      return;
+    }
 
     if (hasEthBalance) {
       const executionPrompt = new Select({
@@ -657,7 +985,6 @@ const runApproveRequestPrompt = async () => {
       }
 
       if (executionSelection === "broadcaster-7702") {
-        const capturedBundle = getCapturedBundleForRequest(selected.id, selected.topic);
         if (!isDefined(capturedBundle) || !capturedBundle.calls.length) {
           console.log(
             "No captured bundle found for this request. Use public send or capture request again.".yellow,
@@ -678,6 +1005,8 @@ const runApproveRequestPrompt = async () => {
         );
         return;
       }
+
+      await prepareSignerForConnectedSessionAddress(context);
     } else {
       console.log(
         "Stealth/Ephemeral account has no ETH balance: routing to 7702 broadcaster flow.".yellow,
@@ -819,6 +1148,43 @@ const buildAndSendCrossContract7702FromBundle = async (
   }
 
   const chainName = getCurrentNetwork();
+
+  const sessions = listWalletConnectSessions();
+  const connectedAddress = sessions.find((session) => {
+    return session.topic === selectedBundle.topic;
+  })?.connectedAddress;
+  const relayAdaptAddress = connectedAddress; //getRailgunRelayAdaptAddressForChain(chainName);
+
+  const eoaPreflightPassed = await runBundledCallPreflight(
+    chainName,
+    selectedBundle.calls,
+    connectedAddress,
+    "EOA preflight",
+  );
+  const relayPreflightPassed = await runBundledCallPreflight(
+    chainName,
+    selectedBundle.calls,
+    relayAdaptAddress,
+    "RelayAdapt preflight",
+  );
+
+  if (!relayPreflightPassed && eoaPreflightPassed) {
+    console.log(
+      "Calls pass as connected EOA but fail as RelayAdapt sender. This bundle likely depends on msg.sender context and is incompatible with relayed 7702 multicall.".red,
+    );
+    return undefined;
+  }
+
+  if (!eoaPreflightPassed || !relayPreflightPassed) {
+    const continueDespiteFailure = await confirmPrompt(
+      "Preflight simulation failed. Continue anyway?",
+      { initial: false },
+    );
+    if (!continueDespiteFailure) {
+      return undefined;
+    }
+  }
+
   const encryptionKey = await getSaltedPassword();
   if (!isDefined(encryptionKey)) {
     console.log("Canceled (missing wallet password).".yellow);
@@ -828,6 +1194,30 @@ const buildAndSendCrossContract7702FromBundle = async (
   const unshieldERC20Amounts = await parseERC20AmountArray();
   let shieldERC20Recipients = await parseERC20RecipientArray();
   const currentRailgunAddress = getCurrentRailgunAddress();
+
+  const totalNativeCallValue = getTotalBundledCallNativeValue(selectedBundle.calls);
+  if (totalNativeCallValue > 0n) {
+    const wrappedTokenInfo = getWrappedTokenInfoForChain(chainName);
+    const wrappedTokenAddress = wrappedTokenInfo.wrappedAddress.toLowerCase();
+    const existingWrappedUnshield = unshieldERC20Amounts.find((entry) => {
+      return entry.tokenAddress.toLowerCase() === wrappedTokenAddress;
+    });
+
+    if (!isDefined(existingWrappedUnshield)) {
+      unshieldERC20Amounts.push({
+        tokenAddress: wrappedTokenAddress,
+        amount: totalNativeCallValue,
+      });
+      console.log(
+        `Detected bundled call value; auto-adding unshield ${wrappedTokenInfo.wrappedSymbol}=${totalNativeCallValue.toString()} for relay value forwarding.`.yellow,
+      );
+    } else if (existingWrappedUnshield.amount < totalNativeCallValue) {
+      existingWrappedUnshield.amount = totalNativeCallValue;
+      console.log(
+        `Adjusted ${wrappedTokenInfo.wrappedSymbol} unshield to ${totalNativeCallValue.toString()} to satisfy bundled call value.`.yellow,
+      );
+    }
+  }
 
   let {
     unshieldNFTAmounts,
@@ -1096,6 +1486,7 @@ const runApprovePrompt = async () => {
   }
 
   let approvalAddress = getCurrentWalletPublicAddress();
+  let approvalScopeID: Optional<string>;
   if (accountSelection === "ephemeral") {
     let ephemeralAddress = getCurrentKnownEphemeralState()?.currentAddress;
     if (!isDefined(ephemeralAddress)) {
@@ -1124,6 +1515,14 @@ const runApprovePrompt = async () => {
     }
 
     approvalAddress = ephemeralAddress;
+
+    const activeProfile = getActiveStealthProfile();
+    if (
+      isDefined(activeProfile)
+      && activeProfile.accountAddress?.toLowerCase() === ephemeralAddress.toLowerCase()
+    ) {
+      approvalScopeID = getPreferredScopeForProfile(activeProfile);
+    }
   }
 
   if (accountSelection === "stealth-profile") {
@@ -1170,21 +1569,12 @@ const runApprovePrompt = async () => {
 
     setActiveStealthProfile(selectedProfile.id);
     approvalAddress = selectedProfile.accountAddress;
+    approvalScopeID = getPreferredScopeForProfile(selectedProfile);
   }
 
-  const scopePrompt = new Input({
-    header: " ",
-    message: "Optional stealth scope ID (blank for none)",
-  });
-
-  const scopeInput = (await scopePrompt.run().catch(confirmPromptCatch)) as
-    | string
-    | undefined;
-
-  const scopeID = isDefined(scopeInput) ? scopeInput.trim() : undefined;
   const approved = await approveWalletConnectSessionProposal(proposalID, {
     accountAddress: approvalAddress,
-    scopeID: scopeID?.length ? scopeID : undefined,
+    scopeID: approvalScopeID,
   });
 
   console.log(
@@ -1249,19 +1639,12 @@ const runPairPrompt = async () => {
   if (!isDefined(wcURI)) {
     return;
   }
-
-  const scopePrompt = new Input({
-    header: " ",
-    message: "Optional stealth scope ID (blank for none)",
-  });
-
-  const scopeInput = (await scopePrompt.run().catch(confirmPromptCatch)) as
-    | string
-    | undefined;
-
-  const scopeID = isDefined(scopeInput) ? scopeInput.trim() : undefined;
+  const activeProfile = getActiveStealthProfile();
+  const scopeID = isDefined(activeProfile)
+    ? getPreferredScopeForProfile(activeProfile)
+    : undefined;
   const paired = await pairWalletConnectURI(wcURI.trim(), {
-    scopeID: scopeID?.length ? scopeID : undefined,
+    scopeID,
   });
 
   console.log(

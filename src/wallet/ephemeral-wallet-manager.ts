@@ -429,6 +429,7 @@ export const setCurrentEphemeralWalletSession = async (
   }
 
   await railgunWallet.setCurrentEphemeralWallet(currentAccount.signer);
+  walletManager.currentEthersWallet = currentAccount.signer;
 
   const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex(chainId);
   cacheEphemeralState(walletID, currentIndex, currentAccount.address);
