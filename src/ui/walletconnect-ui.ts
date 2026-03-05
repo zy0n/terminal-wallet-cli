@@ -741,6 +741,11 @@ const prepareSignerForConnectedSessionAddress = async (context: {
     throw new Error("Resolved signer is unavailable for connected session address.");
   }
 
+  if (isDefined(resolvedSigner)) {
+    const provider = getProviderForChain(getCurrentNetwork()) as any;
+    return resolvedSigner.connect(provider);
+  }
+
   return resolvedSigner;
 };
 
@@ -1734,6 +1739,17 @@ const runApprovePrompt = async () => {
     accountAddress: approvalAddress,
     scopeID: approvalScopeID,
   });
+
+  const approvalContext = {
+    connectedAddress: approvalAddress.toLowerCase(),
+    type: getConnectedAccountTypeForAddress(approvalAddress),
+  };
+  if (approvalContext.type === "ephemeral" || approvalContext.type === "stealth") {
+    const resolvedSigner = await prepareSignerForConnectedSessionAddress(approvalContext);
+    if (isDefined(resolvedSigner)) {
+      setWalletConnectSignerOverrideForTopic(approved.topic, resolvedSigner);
+    }
+  }
 
   console.log(
     `Approved proposal #${proposalID} -> topic ${approved.topic} via ${approved.accountAddress}`
