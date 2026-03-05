@@ -1709,6 +1709,32 @@ export const disconnectWalletConnectSession = async (topic: string) => {
   return true;
 };
 
+export const disconnectAllWalletConnectSessions = async () => {
+  ensureKeychainIsLoaded();
+
+  const sessions = listWalletConnectSessions().filter((session) => {
+    return session.status === "paired";
+  });
+
+  if (!sessions.length) {
+    return 0;
+  }
+
+  let disconnectedCount = 0;
+  for (const session of sessions) {
+    try {
+      const disconnected = await disconnectWalletConnectSession(session.topic);
+      if (disconnected) {
+        disconnectedCount += 1;
+      }
+    } catch {
+      // continue disconnecting remaining sessions
+    }
+  }
+
+  return disconnectedCount;
+};
+
 export const getWalletConnectPendingSessionProposals = async () => {
   const client = await initializeWalletConnectKit();
   const proposalMap = client.getPendingSessionProposals() as Record<

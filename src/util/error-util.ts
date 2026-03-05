@@ -3,6 +3,7 @@ import { rimrafSync } from "rimraf";
 import path from "path";
 import configDefaults from "../config/config-defaults";
 import { stopWakuClient } from "../waku/connect-waku";
+import { disconnectAllWalletConnectSessions } from "../walletconnect/walletconnect-bridge";
 
 export const RAILGUN_HEADER = `
 ▄▄▄▄▄ ▄   ▄ ▗▄▄▄▖▗▞▀▚▖ ▄▄▄ ▄▄▄▄  ▄ ▄▄▄▄  ▗▞▀▜▌█ 
@@ -42,6 +43,13 @@ export const processDestroyExit = async () => {
 export const processSafeExit = async () => {
   console.log("Shutting Down Modules");
   clearConsoleBuffer();
+
+  try {
+    await disconnectAllWalletConnectSessions();
+  } catch {
+    // continue shutdown regardless of WalletConnect disconnect errors
+  }
+
   await killEngineAndWaku();
   console.clear();
   process.exit(0);

@@ -354,6 +354,20 @@ const printWalletConnectSessions = () => {
   });
 };
 
+const printWalletConnectPairedSessions = () => {
+  const sessions = listWalletConnectSessions().filter((session) => {
+    return session.status === "paired";
+  });
+  if (!sessions.length) {
+    console.log("No active paired WalletConnect sessions.".yellow);
+    return;
+  }
+
+  sessions.forEach((session) => {
+    console.log(formatSessionLine(session).grey);
+  });
+};
+
 const buildWalletConnectCardHeader = async () => {
   try {
     await initializeWalletConnectKit();
@@ -362,7 +376,10 @@ const buildWalletConnectCardHeader = async () => {
   }
 
   const summary = getWalletConnectSessionSummary();
-  const sessions = listWalletConnectSessions().slice(0, 3);
+  const sessions = listWalletConnectSessions();
+  const pairedSessions = sessions
+    .filter((session) => session.status === "paired")
+    .slice(0, 4);
   const pendingCount = summary.pendingProposals;
   const pendingRequestCount = summary.pendingRequests;
 
@@ -376,15 +393,24 @@ const buildWalletConnectCardHeader = async () => {
       .toString()
       .yellow}`,
     `${"│".grey} captured-bundles=${summary.capturedBundles.toString().magenta}`,
-    `${"│".grey} latest-account=${shortAddress(summary.activeConnectedAddress ?? summary.latestConnectedAddress)}`,
+    `${"│".grey} active-account=${shortAddress(summary.activeConnectedAddress ?? summary.latestConnectedAddress)}`,
     `${"│".grey} acct: public | ephemeral | stealth | other`,
+    `${"│".grey} quick-actions: ${
+      summary.pendingRequests > 0
+        ? "approve-request".cyan
+        : summary.pendingProposals > 0
+          ? "approve-proposal".cyan
+          : summary.paired > 0
+            ? "disconnect".yellow
+            : "pair".green
+    }`,
   ];
 
-  if (!sessions.length) {
-    cardRows.push(`${"│".grey} sessions: none`);
+  if (!pairedSessions.length) {
+    cardRows.push(`${"│".grey} active sessions: none`);
   } else {
-    cardRows.push(`${"│".grey} recent sessions:`);
-    sessions.forEach((session) => {
+    cardRows.push(`${"│".grey} active sessions:`);
+    pairedSessions.forEach((session) => {
       const statusColor = session.status === "paired" ? "green" : "grey";
       const accountType = getConnectedAccountTypeForAddress(session.connectedAddress);
       cardRows.push(
@@ -2058,48 +2084,68 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
 
   const prompt = new Select({
     header: cardHeader,
-    message: "WalletConnect Tools (interactive)",
+    message: "WalletConnect Command Palette",
     choices: [
       {
+        name: "section-session",
+        message: "─ Session Actions ─".dim,
+        disabled: true,
+      },
+      {
         name: "pair",
-        message: "Pair WalletConnect URI",
-      },
-      {
-        name: "pending",
-        message: `View Pending Session Proposals (${summary.pendingProposals})`,
-      },
-      {
-        name: "pending-requests",
-        message: `View Pending Session Requests (${summary.pendingRequests})`,
-      },
-      {
-        name: "approve",
-        message: `Approve Pending Session Proposal (${summary.pendingProposals})`,
-        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
-      },
-      {
-        name: "approve-request",
-        message: `Approve Pending Session Request (${summary.pendingRequests})`,
-        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
-      },
-      {
-        name: "reject",
-        message: `Reject Pending Session Proposal (${summary.pendingProposals})`,
-        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
-      },
-      {
-        name: "reject-request",
-        message: `Reject Pending Session Request (${summary.pendingRequests})`,
-        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
-      },
-      {
-        name: "list",
-        message: `List WalletConnect Sessions (${summary.total})`,
+        message: "Pair WalletConnect URI".green,
       },
       {
         name: "disconnect",
         message: `Disconnect WalletConnect Session (${summary.paired} paired)`,
         disabled: summary.paired === 0 ? "No paired sessions" : false,
+      },
+      {
+        name: "list-active",
+        message: `List Active Sessions (${summary.paired})`,
+        disabled: summary.paired === 0 ? "No paired sessions" : false,
+      },
+      {
+        name: "list",
+        message: `List All Sessions (${summary.total})`,
+      },
+      {
+        name: "section-pending",
+        message: "─ Pending Actions ─".dim,
+        disabled: true,
+      },
+      {
+        name: "approve",
+        message: `Approve Pending Proposal (${summary.pendingProposals})`,
+        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
+      },
+      {
+        name: "approve-request",
+        message: `Approve Pending Request (${summary.pendingRequests})`,
+        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
+      },
+      {
+        name: "reject",
+        message: `Reject Pending Proposal (${summary.pendingProposals})`,
+        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
+      },
+      {
+        name: "reject-request",
+        message: `Reject Pending Request (${summary.pendingRequests})`,
+        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
+      },
+      {
+        name: "pending",
+        message: `View Pending Proposals (${summary.pendingProposals})`,
+      },
+      {
+        name: "pending-requests",
+        message: `View Pending Requests (${summary.pendingRequests})`,
+      },
+      {
+        name: "section-bundles",
+        message: "─ Bundle Actions ─".dim,
+        disabled: true,
       },
       {
         name: "bundles",
@@ -2115,7 +2161,7 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         message: "Clear Captured Bundles",
         disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
       },
-      { name: "refresh-card", message: "Refresh Card".cyan },
+      { name: "refresh-card", message: "Repaint Card".cyan },
       { name: "exit-menu", message: "Go Back".grey },
     ],
     multiple: false,
@@ -2139,6 +2185,9 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         break;
       case "list":
         printWalletConnectSessions();
+        break;
+      case "list-active":
+        printWalletConnectPairedSessions();
         break;
       case "pending":
         await printPendingWalletConnectProposals();
