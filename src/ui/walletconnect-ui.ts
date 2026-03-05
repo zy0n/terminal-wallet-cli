@@ -31,6 +31,8 @@ import {
 } from "../wallet/wallet-util";
 import {
   getCurrentKnownEphemeralState,
+  getKnownEphemeralIndexForAddress,
+  listEphemeralSessionScopes,
   setEphemeralWalletIndex,
   setCurrentEphemeralWalletSession,
   syncCurrentEphemeralWallet,
@@ -567,15 +569,11 @@ const getStealthSignerScopeForAddress = (connectedAddress: string) => {
   return undefined;
 };
 
-const getStealthSignerScopeCandidatesForAddress = (connectedAddress: string) => {
-  const normalized = connectedAddress.toLowerCase();
-  const profile = listStealthProfiles().find((item) => {
-    return item.accountAddress?.toLowerCase() === normalized;
-  });
-  if (!isDefined(profile)) {
-    return [] as string[];
-  }
-
+const getStealthSignerScopeCandidatesForProfile = (profile: {
+  scopeID?: string;
+  signerStrategyScopeID?: string;
+  slot?: number;
+}) => {
   const candidates: string[] = [];
   const add = (value?: string) => {
     if (!isDefined(value)) {
@@ -606,6 +604,25 @@ const getStealthSignerScopeCandidatesForAddress = (connectedAddress: string) => 
   return candidates;
 };
 
+const getStealthSignerScopeCandidatesForAddress = (connectedAddress: string) => {
+  const normalized = connectedAddress.toLowerCase();
+  const profile = listStealthProfiles().find((item) => {
+    return item.accountAddress?.toLowerCase() === normalized;
+  });
+  if (!isDefined(profile)) {
+    return [] as string[];
+  }
+
+  return getStealthSignerScopeCandidatesForProfile(profile);
+};
+
+const getStealthProfileByID = (profileID?: string) => {
+  if (!isDefined(profileID)) {
+    return undefined;
+  }
+  return listStealthProfiles().find((profile) => profile.id === profileID);
+};
+
 const getStealthProfileForAddress = (connectedAddress: string) => {
   const normalized = connectedAddress.toLowerCase();
   return listStealthProfiles().find((item) => {
@@ -633,6 +650,7 @@ const getPreferredScopeForProfile = (profile: {
 const prepareSignerForConnectedSessionAddress = async (context: {
   connectedAddress?: string;
   type: ConnectedAccountType;
+  stealthProfileID?: string;
 }) => {
   if (!isDefined(context.connectedAddress)) {
     throw new Error("Connected session address is missing.");
@@ -657,71 +675,117 @@ const prepareSignerForConnectedSessionAddress = async (context: {
       throw new Error("Missing wallet password for stealth signer sync.");
     }
 
-    const stealthProfile = getStealthProfileForAddress(context.connectedAddress);
-    const scopeCandidates = getStealthSignerScopeCandidatesForAddress(
-      context.connectedAddress,
-    );
+    const connectedAddress = context.connectedAddress.toLowerCase();
+    const stealthProfile = isDefined(context.stealthProfileID)
+      ? getStealthProfileByID(context.stealthProfileID)
+      : getStealthProfileForAddress(context.connectedAddress);
+    if (!isDefined(stealthProfile)) {
+      throw new Error("Connected stealth profile was not found.");
+    }
+    if (stealthProfile.accountAddress?.toLowerCase() !== connectedAddress) {
+      throw new Error(
+        `Selected stealth profile does not match connected address ${connectedAddress}.`,
+      );
+    }
+
+    const uniqueScopeCandidates = new Set<string>();
+    for (const scopeID of getStealthSignerScopeCandidatesForProfile(stealthProfile)) {
+      uniqueScopeCandidates.add(scopeID);
+    }
+    for (const sessionScope of listEphemeralSessionScopes()) {
+      if (sessionScope.lastKnownAddress?.toLowerCase() === connectedAddress) {
+        uniqueScopeCandidates.add(sessionScope.scopeID);
+      }
+    }
+
+    const uniqueIndexCandidates = new Set<number>();
+    if (typeof stealthProfile.slot === "number") {
+      uniqueIndexCandidates.add(stealthProfile.slot);
+    }
+    const knownIndex = getKnownEphemeralIndexForAddress(connectedAddress);
+    if (typeof knownIndex === "number") {
+      uniqueIndexCandidates.add(knownIndex);
+    }
+    for (const sessionScope of listEphemeralSessionScopes()) {
+      if (
+        sessionScope.lastKnownAddress?.toLowerCase() === connectedAddress
+        && typeof sessionScope.lastKnownIndex === "number"
+      ) {
+        uniqueIndexCandidates.add(sessionScope.lastKnownIndex);
+      }
+    }
+
+    const scopeCandidates = [...uniqueScopeCandidates.values()];
+    const indexCandidates = [...uniqueIndexCandidates.values()];
+
+    const tryResolveStealthSession = async (
+      scopeID?: string,
+      index?: number,
+    ): Promise<Optional<{ currentAddress: string; signer: any }>> => {
+      if (typeof index === "number") {
+        const indexed = await setEphemeralWalletIndex(encryptionKey, index, scopeID);
+        const indexedAddress = indexed?.currentAddress?.toLowerCase();
+        if (indexedAddress !== connectedAddress) {
+          return undefined;
+        }
+      }
+
+      const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+      if (!isDefined(session)) {
+        return undefined;
+      }
+      const sessionAddress = session?.currentAddress?.toLowerCase();
+      if (sessionAddress !== connectedAddress || !isDefined(session.signer)) {
+        return undefined;
+      }
+      const { signer } = session;
+
+      return {
+        currentAddress: sessionAddress,
+        signer,
+      };
+    };
+
     let matchedScope: Optional<string>;
+    let matchedIndex: Optional<number>;
 
-    const profileSlot = stealthProfile?.slot;
-    if (typeof profileSlot === "number") {
-      for (const scopeID of scopeCandidates) {
-        const indexed = await setEphemeralWalletIndex(
-          encryptionKey,
-          profileSlot,
-          scopeID,
-        );
-        const indexedAddress = indexed?.currentAddress?.toLowerCase();
-        if (indexedAddress === context.connectedAddress.toLowerCase()) {
-          matchedScope = scopeID;
-          resolvedAddress = indexedAddress;
-          const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
-          resolvedSigner = session?.signer;
-          break;
+    for (const scopeID of [...scopeCandidates, undefined]) {
+      for (const index of indexCandidates) {
+        const resolved = await tryResolveStealthSession(scopeID, index);
+        if (!isDefined(resolved)) {
+          continue;
         }
+        resolvedAddress = resolved.currentAddress;
+        resolvedSigner = resolved.signer;
+        matchedScope = scopeID;
+        matchedIndex = index;
+        break;
+      }
+      if (isDefined(resolvedSigner)) {
+        break;
       }
 
-      if (!isDefined(matchedScope)) {
-        const indexed = await setEphemeralWalletIndex(
-          encryptionKey,
-          profileSlot,
-        );
-        const indexedAddress = indexed?.currentAddress?.toLowerCase();
-        if (indexedAddress === context.connectedAddress.toLowerCase()) {
-          matchedScope = "<slot-default>";
-          resolvedAddress = indexedAddress;
-          const session = await setCurrentEphemeralWalletSession(encryptionKey);
-          resolvedSigner = session?.signer;
-        }
+      const resolved = await tryResolveStealthSession(scopeID);
+      if (!isDefined(resolved)) {
+        continue;
       }
+      resolvedAddress = resolved.currentAddress;
+      resolvedSigner = resolved.signer;
+      matchedScope = scopeID;
+      break;
     }
 
-    if (!isDefined(matchedScope)) {
-      for (const scopeID of scopeCandidates) {
-        const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
-        const currentAddress = session?.currentAddress?.toLowerCase();
-        if (currentAddress === context.connectedAddress.toLowerCase()) {
-          matchedScope = scopeID;
-          resolvedAddress = currentAddress;
-          resolvedSigner = session?.signer;
-          break;
-        }
-      }
+    if (!isDefined(resolvedSigner)) {
+      throw new Error(
+        `Connected stealth address ${connectedAddress} is not derivable for profile ${stealthProfile.id} using current scope/index metadata.`,
+      );
     }
 
-    if (!isDefined(matchedScope)) {
-      const fallback = await setCurrentEphemeralWalletSession(encryptionKey);
-      const fallbackAddress = fallback?.currentAddress?.toLowerCase();
-      if (fallbackAddress === context.connectedAddress.toLowerCase()) {
-        matchedScope = "<default>";
-        resolvedAddress = fallbackAddress;
-        resolvedSigner = fallback?.signer;
-      }
-    }
-
-    if (isDefined(matchedScope)) {
-      console.log(`Stealth signer session matched via scope ${matchedScope}.`.grey);
-    }
+    const matchedScopeLabel = isDefined(matchedScope) ? matchedScope : "<default>";
+    const matchedIndexLabel = isDefined(matchedIndex) ? matchedIndex.toString() : "<current>";
+    console.log(
+      `Stealth signer session matched via scope ${matchedScopeLabel} @ index ${matchedIndexLabel}.`.grey,
+    );
   }
 
   const connectedAddress = context.connectedAddress.toLowerCase();
@@ -1379,7 +1443,7 @@ const buildAndSendCrossContract7702FromBundle = async (
       type: getConnectedAccountTypeForAddress(bundleRequestedFrom),
     }
     : getConnectedAccountContext(selectedBundle.topic);
-  let connectedAddress = bundleContext.connectedAddress;
+  let { connectedAddress } = bundleContext;
   if (bundleContext.type === "ephemeral" || bundleContext.type === "stealth") {
     const bundleSigner = await prepareSignerForConnectedSessionAddress(bundleContext);
     const signerAddress = bundleSigner?.address?.toLowerCase();
@@ -1444,10 +1508,12 @@ const buildAndSendCrossContract7702FromBundle = async (
   );
   const currentRailgunAddress = getCurrentRailgunAddress();
 
-  let {
-    unshieldNFTAmounts,
-    shieldNFTRecipients,
-  } = deriveNFTActionsFromBundledCalls(selectedBundle.calls, currentRailgunAddress);
+  const derivedNFTActions = deriveNFTActionsFromBundledCalls(
+    selectedBundle.calls,
+    currentRailgunAddress,
+  );
+  const { unshieldNFTAmounts } = derivedNFTActions;
+  let { shieldNFTRecipients } = derivedNFTActions;
   if (unshieldNFTAmounts.length) {
     console.log(
       `Detected ${unshieldNFTAmounts.length} NFT transfer(s) from bundled calls; auto-adding NFT unshield/shield entries.`.grey,
@@ -1712,6 +1778,7 @@ const runApprovePrompt = async () => {
 
   let approvalAddress = getCurrentWalletPublicAddress();
   let approvalScopeID: Optional<string>;
+  let approvalStealthProfileID: Optional<string>;
   if (accountSelection === "ephemeral") {
     let ephemeralAddress = getCurrentKnownEphemeralState()?.currentAddress;
     if (!isDefined(ephemeralAddress)) {
@@ -1795,6 +1862,7 @@ const runApprovePrompt = async () => {
     setActiveStealthProfile(selectedProfile.id);
     approvalAddress = selectedProfile.accountAddress;
     approvalScopeID = getPreferredScopeForProfile(selectedProfile);
+    approvalStealthProfileID = selectedProfile.id;
   }
 
   const approved = await approveWalletConnectSessionProposal(proposalID, {
@@ -1805,6 +1873,7 @@ const runApprovePrompt = async () => {
   const approvalContext = {
     connectedAddress: approvalAddress.toLowerCase(),
     type: getConnectedAccountTypeForAddress(approvalAddress),
+    stealthProfileID: approvalStealthProfileID,
   };
   if (approvalContext.type === "ephemeral" || approvalContext.type === "stealth") {
     const resolvedSigner = await prepareSignerForConnectedSessionAddress(approvalContext);
@@ -1866,7 +1935,6 @@ const runPairPrompt = async () => {
   const uriPrompt = new Input({
     header: " ",
     message: "Paste WalletConnect URI (wc:...)",
-    validate: (value: string) => value.trim().startsWith("wc:"),
   });
 
   const wcURI = (await uriPrompt.run().catch(confirmPromptCatch)) as
@@ -1875,11 +1943,21 @@ const runPairPrompt = async () => {
   if (!isDefined(wcURI)) {
     return;
   }
+  const trimmedURI = wcURI.trim();
+  if (!trimmedURI.length) {
+    console.log("Pair canceled.".yellow);
+    return;
+  }
+  if (!trimmedURI.startsWith("wc:")) {
+    console.log("Pair canceled (invalid WalletConnect URI).".yellow);
+    return;
+  }
+
   const activeProfile = getActiveStealthProfile();
   const scopeID = isDefined(activeProfile)
     ? getPreferredScopeForProfile(activeProfile)
     : undefined;
-  const paired = await pairWalletConnectURI(wcURI.trim(), {
+  const paired = await pairWalletConnectURI(trimmedURI, {
     scopeID,
   });
 
