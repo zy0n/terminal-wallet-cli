@@ -1461,10 +1461,57 @@ const printCapturedWalletConnectBundles = () => {
   });
 };
 
+const buildComposedCapturedBundles = (
+  bundles: ReturnType<typeof listWalletConnectCapturedBundles>,
+) => {
+  const isDefinedBundle = (
+    bundle: Optional<ReturnType<typeof listWalletConnectCapturedBundles>[number]>,
+  ): bundle is ReturnType<typeof listWalletConnectCapturedBundles>[number] => {
+    return isDefined(bundle);
+  };
+
+  const groups = bundles.reduce<Record<string, typeof bundles>>((acc, bundle) => {
+    if (!bundle.calls.length) {
+      return acc;
+    }
+
+    const groupKey = `${bundle.topic}:${bundle.chainId ?? "n/a"}`;
+    acc[groupKey] ??= [];
+    acc[groupKey].push(bundle);
+    return acc;
+  }, {});
+
+  return Object.entries(groups)
+    .map(([groupKey, grouped]) => {
+      const ordered = [...grouped].sort((left, right) => left.createdAt - right.createdAt);
+      if (ordered.length < 2) {
+        return undefined;
+      }
+
+      const first = ordered[0];
+      const last = ordered[ordered.length - 1];
+      const composedCalls = ordered.flatMap((bundle) => bundle.calls);
+
+      return {
+        key: `composed:${groupKey}`,
+        topic: first.topic,
+        requestId: last.requestId,
+        chainId: first.chainId,
+        method: "wallet_sendCalls",
+        calls: composedCalls,
+        rawParams: undefined,
+        createdAt: last.createdAt,
+      } as ReturnType<typeof listWalletConnectCapturedBundles>[number];
+    })
+    .filter(isDefinedBundle)
+    .sort((left, right) => right.createdAt - left.createdAt);
+};
+
 const selectCapturedBundle = async (): Promise<
   Optional<ReturnType<typeof listWalletConnectCapturedBundles>[number]>
 > => {
   const bundles = listWalletConnectCapturedBundles();
+  const composedBundles = buildComposedCapturedBundles(bundles);
   if (!bundles.length) {
     console.log("No captured WalletConnect bundles yet.".yellow);
     return undefined;
@@ -1474,6 +1521,11 @@ const selectCapturedBundle = async (): Promise<
     header: " ",
     message: "Select captured bundle",
     choices: [
+      ...composedBundles.map((bundle) => ({
+        name: bundle.key,
+        message:
+          `[composed] ${bundle.calls.length} call(s) from topic ${bundle.topic.slice(0, 16)}...` ,
+      })),
       ...bundles.map((bundle) => ({
         name: bundle.key,
         message: `#${bundle.requestId} ${bundle.method} · ${bundle.calls.length} call(s) · ${bundle.topic.slice(0, 16)}...`,
@@ -1488,7 +1540,8 @@ const selectCapturedBundle = async (): Promise<
     return undefined;
   }
 
-  return bundles.find((bundle) => bundle.key === selectedKey);
+  return composedBundles.find((bundle) => bundle.key === selectedKey)
+    ?? bundles.find((bundle) => bundle.key === selectedKey);
 };
 
 const buildAndSendCrossContract7702FromBundle = async (
