@@ -10,6 +10,7 @@ import {
   manualRatchetEphemeralWallet,
   removeEphemeralSessionScope,
   setEphemeralSessionRatchetPolicy,
+  setCurrentEphemeralWalletSession,
   setEphemeralWalletIndex,
   syncCurrentEphemeralWallet,
   upsertEphemeralSessionScope,
@@ -83,6 +84,54 @@ const runTransactionBuilderSafely = async (
     }
     console.log(`Transaction flow failed: ${(error as Error).message}`.yellow);
     await confirmPromptCatchRetry("");
+  }
+};
+
+const getProfileScopeID = (profile: {
+  scopeID?: string;
+  slot?: number;
+}) => {
+  if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
+    return profile.scopeID.trim();
+  }
+  if (isDefined(profile.slot)) {
+    return slotToScopeID(profile.slot);
+  }
+  return undefined;
+};
+
+const prepareStealthSessionForTransaction = async (profile: {
+  name: string;
+  scopeID?: string;
+  slot?: number;
+}) => {
+  const encryptionKey = await getSaltedPassword();
+  if (!isDefined(encryptionKey)) {
+    return false;
+  }
+
+  const scopeID = getProfileScopeID(profile);
+  try {
+    const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+    if (!isDefined(session)) {
+      console.log("Failed to set current ephemeral wallet session.".yellow);
+      await confirmPromptCatchRetry("");
+      return false;
+    }
+
+    console.log(
+      `Using stealth session ${session.currentAddress} (index ${session.currentIndex})${
+        session.scopeID ? ` scope=${session.scopeID}` : ""
+      } for ${profile.name}.`.grey,
+    );
+
+    return true;
+  } catch (error) {
+    console.log(
+      `Failed to set current ephemeral wallet session: ${(error as Error).message}`.yellow,
+    );
+    await confirmPromptCatchRetry("");
+    return false;
   }
 };
 
@@ -294,6 +343,11 @@ const runFundUnshieldERC20ForActiveProfile = async () => {
     return;
   }
 
+  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
+  if (!sessionReady) {
+    return;
+  }
+
   await runTransactionBuilderSafely(chainName, RailgunTransaction.Unshield, {
     selections: amountSelections,
     confirmAmountsDisabled: false,
@@ -319,6 +373,11 @@ const runFundUnshieldETHForActiveProfile = async () => {
   if (!amountSelections.length) {
     console.log("No ETH amount selected for unshield.".yellow);
     await confirmPromptCatchRetry("");
+    return;
+  }
+
+  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
+  if (!sessionReady) {
     return;
   }
 
@@ -402,6 +461,11 @@ const runWithdrawReshieldERC20FromProfile = async () => {
     return;
   }
 
+  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
+  if (!sessionReady) {
+    return;
+  }
+
   console.log(
     [
       `Reshield profile=${activeProfile.name}`,
@@ -450,6 +514,11 @@ const runWithdrawReshieldETHFromProfile = async () => {
   if (!amountSelections.length) {
     console.log("No ETH amount selected for reshield.".yellow);
     await confirmPromptCatchRetry("");
+    return;
+  }
+
+  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
+  if (!sessionReady) {
     return;
   }
 

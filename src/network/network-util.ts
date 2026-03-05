@@ -6,7 +6,7 @@ import {
 } from "@railgun-community/shared-models";
 import { WrappedTokenInfo } from "../models/token-models";
 import configDefaults from "../config/config-defaults";
-import { Contract, HDNodeWallet, JsonRpcProvider, Mnemonic, Wallet } from "ethers";
+import { Contract, HDNodeWallet, JsonRpcProvider, Mnemonic } from "ethers";
 import { getFallbackProviderForNetwork } from "@railgun-community/wallet";
 import { RemoteConfig } from "../models/network-models";
 
@@ -69,14 +69,14 @@ export const getEthersWallet = (
   mnemonic: string,
   derivationIndex: number,
   chainName: NetworkName,
-): Wallet => {
+): HDNodeWallet => {
   const derivationPathIndex = `m/44'/60'/0'/0/${derivationIndex}`;
   const provider = getFirstPollingProviderForChain(chainName);
   const walletInfo = HDNodeWallet.fromMnemonic(
     Mnemonic.fromPhrase(mnemonic),
     derivationPathIndex,
   );
-  const wallet = new Wallet(walletInfo.privateKey, provider);
+  const wallet = walletInfo.connect(provider);
   return wallet;
 };
 

@@ -1,6 +1,6 @@
 import { ProgressBar } from "../ui/progressBar-ui";
 import { KeychainFile, WalletCache } from "../models/wallet-models";
-import { Wallet } from "ethers";
+import { HDNodeWallet } from "ethers";
 import { RailgunReadableAmount } from "../models/balance-models";
 import {
   POIProofProgressEvent,
@@ -21,7 +21,7 @@ export type WalletManager = {
   keyChain: KeychainFile;
   activeWalletName: string;
   currentActiveWallet: WalletCache;
-  currentEthersWallet: Wallet;
+  currentEthersWallet: HDNodeWallet;
   comparisonRefHash: Optional<string | undefined>;
   menuLoaded: boolean;
   saltedPassword: string;

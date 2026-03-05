@@ -15,6 +15,7 @@ import { getCurrentRailgunID } from "./wallet-util";
 import { walletManager } from "./wallet-manager";
 import { getCurrentNetwork } from "../engine/engine";
 import { getChainForName } from "../network/network-util";
+import { HDNodeWallet } from "ethers";
 
 type EphemeralWalletDerivationStrategy = (...args: unknown[]) => unknown;
 
@@ -27,6 +28,12 @@ type RailgunWalletWithEphemeralSignerProvider = {
   setEphemeralWalletDerivationStrategy?: (
     strategy: EphemeralWalletDerivationStrategy,
   ) => void;
+  setCurrentEphemeralWallet?: (wallet: HDNodeWallet) => Promise<void>;
+};
+
+type EphemeralAccountWithSigner = {
+  address: string;
+  signer: HDNodeWallet;
 };
 
 const lower = (value: string) => value.toLowerCase();
@@ -339,6 +346,19 @@ const findKnownIndexForAddress = (
   return Number(match[0]);
 };
 
+function assertEphemeralAccountSigner(
+  account: unknown,
+): asserts account is EphemeralAccountWithSigner {
+  if (!isDefined(account) || typeof account !== "object") {
+    throw new Error("Invalid ephemeral account result.");
+  }
+
+  const maybeSigner = (account as { signer?: unknown }).signer;
+  if (!(maybeSigner instanceof HDNodeWallet)) {
+    throw new Error("Invalid ephemeral signer. Expected HDNodeWallet.");
+  }
+}
+
 export const shouldRatchetForTransaction = (
   transactionType: RailgunTransaction,
   isBroadcasted: boolean,
@@ -382,6 +402,45 @@ export const syncCurrentEphemeralWallet = async (
     walletID,
     currentIndex,
     currentAddress,
+  };
+};
+
+export const setCurrentEphemeralWalletSession = async (
+  encryptionKey: string,
+  scopeID?: string,
+) => {
+  const walletID = getCurrentRailgunID();
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+  if (!isDefined(walletID) || !isDefined(chain)) {
+    return undefined;
+  }
+
+  const chainId = BigInt(chain.id);
+  const normalizedScopeID = normalizeScopeID(scopeID);
+  const manager = getEphemeralKeyManager(walletID, encryptionKey, normalizedScopeID);
+  await autoSyncEphemeralIndex(manager);
+
+  const currentAccount = await manager.getCurrentAccount(chainId);
+  assertEphemeralAccountSigner(currentAccount);
+  const railgunWallet = fullWalletForID(walletID) as RailgunWalletWithEphemeralSignerProvider;
+  if (!isDefined(railgunWallet.setCurrentEphemeralWallet)) {
+    throw new Error("setCurrentEphemeralWallet is not available on current Railgun wallet instance.");
+  }
+
+  await railgunWallet.setCurrentEphemeralWallet(currentAccount.signer);
+
+  const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex(chainId);
+  cacheEphemeralState(walletID, currentIndex, currentAccount.address);
+  if (isDefined(normalizedScopeID)) {
+    updateScopeState(normalizedScopeID, currentIndex, currentAccount.address, false);
+  }
+
+  return {
+    walletID,
+    currentIndex,
+    currentAddress: currentAccount.address,
+    scopeID: normalizedScopeID,
   };
 };
 
