@@ -1,7 +1,9 @@
 import { isDefined } from "@railgun-community/shared-models";
 import {
   approveWalletConnectSessionProposal,
+  clearWalletConnectCapturedBundles,
   disconnectWalletConnectSession,
+  listWalletConnectCapturedBundles,
   getWalletConnectSessionSummary,
   getWalletConnectPendingSessionProposals,
   initializeWalletConnectKit,
@@ -80,6 +82,7 @@ const buildWalletConnectCardHeader = async () => {
       .grey} scoped=${summary.scoped.toString().cyan} pending=${pendingCount
       .toString()
       .yellow}`,
+    `${"│".grey} captured-bundles=${summary.capturedBundles.toString().magenta}`,
     `${"│".grey} latest-account=${shortAddress(summary.latestConnectedAddress)}`,
   ];
 
@@ -119,6 +122,44 @@ const printPendingWalletConnectProposals = async () => {
         `optional=[${optionalNamespaces || "none"}]`,
       ].join(" · ").grey,
     );
+  });
+};
+
+const printCapturedWalletConnectBundles = () => {
+  const bundles = listWalletConnectCapturedBundles();
+  if (!bundles.length) {
+    console.log("No captured WalletConnect bundles yet.".yellow);
+    return;
+  }
+
+  bundles.forEach((bundle) => {
+    const ts = new Date(bundle.createdAt).toISOString();
+    console.log(
+      [
+        `bundle=${bundle.key}`,
+        `method=${bundle.method}`,
+        `topic=${bundle.topic}`,
+        `requestId=${bundle.requestId}`,
+        `chain=${bundle.chainId ?? "n/a"}`,
+        `calls=${bundle.calls.length}`,
+        `at=${ts}`,
+      ].join(" · ").grey,
+    );
+
+    bundle.calls.forEach((call, index) => {
+      const shortData = call.data.length > 26
+        ? `${call.data.slice(0, 26)}...`
+        : call.data;
+      console.log(
+        [
+          `  #${index + 1}`,
+          `to=${call.to}`,
+          `value=${call.value}`,
+          `op=${call.operation}`,
+          `data=${shortData}`,
+        ].join(" · ").grey,
+      );
+    });
   });
 };
 
@@ -507,6 +548,15 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         message: `Disconnect WalletConnect Session (${summary.paired} paired)`,
         disabled: summary.paired === 0 ? "No paired sessions" : false,
       },
+      {
+        name: "bundles",
+        message: `View Captured Bundles (${summary.capturedBundles})`,
+      },
+      {
+        name: "clear-bundles",
+        message: "Clear Captured Bundles",
+        disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
+      },
       { name: "refresh-card", message: "Refresh Card".cyan },
       { name: "exit-menu", message: "Go Back".grey },
     ],
@@ -544,6 +594,14 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
       case "disconnect":
         await runDisconnectPrompt();
         break;
+      case "bundles":
+        printCapturedWalletConnectBundles();
+        break;
+      case "clear-bundles": {
+        const cleared = clearWalletConnectCapturedBundles();
+        console.log(`Cleared ${cleared} captured WalletConnect bundle(s).`.green);
+        break;
+      }
       default:
         break;
     }

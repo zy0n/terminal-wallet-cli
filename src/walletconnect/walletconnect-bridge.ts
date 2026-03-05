@@ -1,7 +1,11 @@
 import { createHash } from "crypto";
 import { isDefined } from "@railgun-community/shared-models";
 import configDefaults from "../config/config-defaults";
-import { WalletConnectSession } from "../models/wallet-models";
+import {
+  WalletConnectBundledCall,
+  WalletConnectCapturedBundle,
+  WalletConnectSession,
+} from "../models/wallet-models";
 import { saveKeychainFile } from "../wallet/wallet-cache";
 import { upsertEphemeralSessionScope } from "../wallet/ephemeral-wallet-manager";
 import { walletManager } from "../wallet/wallet-manager";
@@ -89,7 +93,20 @@ export type WalletConnectSessionSummary = {
   disconnected: number;
   scoped: number;
   pendingProposals: number;
+  capturedBundles: number;
   latestConnectedAddress?: string;
+};
+
+type RuntimeSessionRequestEvent = {
+  id: number;
+  topic: string;
+  params: {
+    chainId?: string;
+    request: {
+      method: string;
+      params?: unknown;
+    };
+  };
 };
 
 type ApproveWalletConnectProposalOptions = {
@@ -106,6 +123,7 @@ export type ApproveWalletConnectProposalResult = {
 
 const MAX_WC_URI_LENGTH = 4096;
 const MAX_SCOPE_LENGTH = 128;
+const MAX_CAPTURED_BUNDLES = 100;
 
 let walletConnectCore: any | undefined = undefined;
 let walletKit: any | undefined = undefined;
@@ -136,6 +154,133 @@ const ensureKeychainIsLoaded = () => {
   if (!isDefined(walletManager.keyChain) || !isDefined(walletManager.keyChain.name)) {
     throw new Error("Wallet keychain is not loaded. Initialize wallet first.");
   }
+};
+
+const getCapturedBundleMap = () => {
+  walletManager.keyChain.walletConnectCapturedBundles ??= {};
+  return walletManager.keyChain.walletConnectCapturedBundles;
+};
+
+const isHexAddress = (value: string) => {
+  return /^0x[0-9a-fA-F]{40}$/.test(value);
+};
+
+const normalizeHexValue = (value: unknown) => {
+  if (!isDefined(value)) {
+    return "0x0";
+  }
+  if (typeof value === "bigint") {
+    return `0x${value.toString(16)}`;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      return "0x0";
+    }
+    return `0x${Math.floor(value).toString(16)}`;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (/^0x[0-9a-fA-F]+$/.test(normalized)) {
+      return normalized.toLowerCase();
+    }
+    if (/^[0-9]+$/.test(normalized)) {
+      return `0x${BigInt(normalized).toString(16)}`;
+    }
+  }
+  return "0x0";
+};
+
+const normalizeData = (value: unknown) => {
+  if (typeof value !== "string") {
+    return "0x";
+  }
+  const normalized = value.trim();
+  if (!normalized.length) {
+    return "0x";
+  }
+  if (/^0x[0-9a-fA-F]*$/.test(normalized)) {
+    return normalized.toLowerCase();
+  }
+  return "0x";
+};
+
+const mapTxLikeToBundledCall = (txLike: any): Optional<WalletConnectBundledCall> => {
+  if (!isDefined(txLike) || typeof txLike !== "object") {
+    return undefined;
+  }
+
+  const to = typeof txLike.to === "string" ? txLike.to.trim() : "";
+  if (!to.length || !isHexAddress(to)) {
+    return undefined;
+  }
+
+  return {
+    to: to.toLowerCase(),
+    value: normalizeHexValue(txLike.value),
+    data: normalizeData(txLike.data ?? txLike.input),
+    operation: 0,
+  };
+};
+
+const getBundledCallsForRequest = (
+  method: string,
+  params: unknown,
+): WalletConnectBundledCall[] => {
+  if (method === "eth_sendTransaction") {
+    const txLike = Array.isArray(params) ? params[0] : params;
+    const call = mapTxLikeToBundledCall(txLike);
+    return isDefined(call) ? [call] : [];
+  }
+
+  if (method === "wallet_sendCalls") {
+    const root = Array.isArray(params) ? params[0] : params;
+    const maybeCalls = (root as any)?.calls;
+    if (!Array.isArray(maybeCalls)) {
+      return [];
+    }
+
+    return maybeCalls
+      .map((callLike) => mapTxLikeToBundledCall(callLike))
+      .filter((call) => isDefined(call)) as WalletConnectBundledCall[];
+  }
+
+  return [];
+};
+
+const captureWalletConnectBundle = (event: RuntimeSessionRequestEvent) => {
+  const method = event.params.request.method;
+  const params = event.params.request.params;
+  const calls = getBundledCallsForRequest(method, params);
+
+  const now = Date.now();
+  const bundle: WalletConnectCapturedBundle = {
+    key: `${event.topic}:${event.id}`,
+    topic: event.topic,
+    requestId: event.id,
+    chainId: event.params.chainId,
+    method,
+    calls,
+    rawParams: params,
+    createdAt: now,
+  };
+
+  const map = getCapturedBundleMap();
+  map[bundle.key] = bundle;
+
+  const orderedKeys = Object.values(map)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .map((item) => item.key);
+
+  for (const staleKey of orderedKeys.slice(MAX_CAPTURED_BUNDLES)) {
+    delete map[staleKey];
+  }
+
+  persistKeychain();
+
+  pushUILog(
+    `WalletConnect request bundled: ${method} on ${event.topic} (${calls.length} call${calls.length === 1 ? "" : "s"}).`,
+    "log",
+  );
 };
 
 const hashSymKey = (symKey: string) => {
@@ -266,11 +411,13 @@ const attachWalletKitListeners = (client: any) => {
     );
   });
 
-  client.on("session_request", (event: { topic: string; params: { request: { method: string } } }) => {
+  client.on("session_request", (event: RuntimeSessionRequestEvent) => {
     pushUILog(
       `WalletConnect session request on topic ${event.topic}: ${event.params.request.method}`,
       "log",
     );
+
+    captureWalletConnectBundle(event);
   });
 
   client.on("session_delete", (event: { topic: string }) => {
@@ -556,6 +703,9 @@ export const listWalletConnectSessions = (): WalletConnectSessionView[] => {
 export const getWalletConnectSessionSummary = (): WalletConnectSessionSummary => {
   const sessionMap = walletManager.keyChain?.walletConnectSessions ?? {};
   const sessions = Object.values(sessionMap);
+  const capturedBundles = Object.keys(
+    walletManager.keyChain?.walletConnectCapturedBundles ?? {},
+  ).length;
 
   const total = sessions.length;
   const paired = sessions.filter((session) => session.status === "paired").length;
@@ -576,8 +726,42 @@ export const getWalletConnectSessionSummary = (): WalletConnectSessionSummary =>
     disconnected,
     scoped,
     pendingProposals,
+    capturedBundles,
     latestConnectedAddress,
   };
+};
+
+export type WalletConnectCapturedBundleView = {
+  key: string;
+  topic: string;
+  requestId: number;
+  chainId?: string;
+  method: string;
+  calls: WalletConnectBundledCall[];
+  createdAt: number;
+};
+
+export const listWalletConnectCapturedBundles = (): WalletConnectCapturedBundleView[] => {
+  const map = walletManager.keyChain?.walletConnectCapturedBundles ?? {};
+  return Object.values(map)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .map((bundle) => ({
+      key: bundle.key,
+      topic: bundle.topic,
+      requestId: bundle.requestId,
+      chainId: bundle.chainId,
+      method: bundle.method,
+      calls: bundle.calls,
+      createdAt: bundle.createdAt,
+    }));
+};
+
+export const clearWalletConnectCapturedBundles = () => {
+  const map = getCapturedBundleMap();
+  const count = Object.keys(map).length;
+  walletManager.keyChain.walletConnectCapturedBundles = {};
+  persistKeychain();
+  return count;
 };
 
 export const disconnectWalletConnectSession = async (topic: string) => {

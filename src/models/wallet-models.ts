@@ -84,6 +84,24 @@ export type WalletConnectSession = {
   status: WalletConnectSessionState;
 };
 
+export type WalletConnectBundledCall = {
+  to: string;
+  value: string;
+  data: string;
+  operation: 0 | 1;
+};
+
+export type WalletConnectCapturedBundle = {
+  key: string;
+  topic: string;
+  requestId: number;
+  chainId?: string;
+  method: string;
+  calls: WalletConnectBundledCall[];
+  rawParams?: unknown;
+  createdAt: number;
+};
+
 export type StealthProfile = {
   id: string;
   name: string;
@@ -111,6 +129,7 @@ export type KeychainFile = {
   hidePrivateInfo?: boolean;
   customProviders?: CustomProviderMap;
   walletConnectSessions?: MapType<WalletConnectSession>;
+  walletConnectCapturedBundles?: MapType<WalletConnectCapturedBundle>;
   stealthProfiles?: MapType<StealthProfile>;
   activeStealthProfileID?: string;
   showSenderAddress?: boolean;
