@@ -176,6 +176,11 @@ let walletConnectCore: any | undefined = undefined;
 let walletKit: any | undefined = undefined;
 let walletKitInitializing: Promise<any> | undefined = undefined;
 let walletKitListenersAttached = false;
+const walletConnectSignerOverridesByTopic: MapType<{
+  signer: any;
+  address: string;
+  updatedAt: number;
+}> = {};
 
 type WalletSendCallsStatusReceipt = {
   logs: {
@@ -545,6 +550,7 @@ const attachWalletKitListeners = (client: any) => {
         status: "disconnected",
         updatedAt: Date.now(),
       };
+      clearWalletConnectSignerOverrideForTopic(event.topic);
       persistKeychain();
     }
 
@@ -666,6 +672,33 @@ const normalizeWalletConnectAccountAddress = (address: string) => {
     throw new Error("WalletConnect account must be a valid 0x address.");
   }
   return normalized;
+};
+
+export const setWalletConnectSignerOverrideForTopic = (
+  topic: string,
+  signer: { address: string },
+) => {
+  const normalizedTopic = topic.trim();
+  if (!normalizedTopic.length) {
+    throw new Error("WalletConnect topic is required for signer override.");
+  }
+  if (!isDefined(signer) || typeof signer.address !== "string") {
+    throw new Error("Invalid signer override payload.");
+  }
+
+  walletConnectSignerOverridesByTopic[normalizedTopic] = {
+    signer,
+    address: normalizeWalletConnectAccountAddress(signer.address),
+    updatedAt: Date.now(),
+  };
+};
+
+export const clearWalletConnectSignerOverrideForTopic = (topic: string) => {
+  const normalizedTopic = topic.trim();
+  if (!normalizedTopic.length) {
+    return;
+  }
+  delete walletConnectSignerOverridesByTopic[normalizedTopic];
 };
 
 const getCurrentCaipChainID = () => {
@@ -931,7 +964,10 @@ const getConnectedWalletSignerForTopic = (
   requestedAddress?: string,
 ) => {
   const connectedAddress = resolveManualSigningAddress(topic, requestedAddress);
-  const signer = getCurrentEthersWallet();
+  const signerOverride = walletConnectSignerOverridesByTopic[topic];
+  const signer = isDefined(signerOverride)
+    ? signerOverride.signer
+    : getCurrentEthersWallet();
   const signerAddress = normalizeWalletConnectAccountAddress(signer.address);
   if (signerAddress !== connectedAddress) {
     throw new Error(
@@ -1198,7 +1234,7 @@ const buildManualApprovedRequestResult = async (
         }) as NonNullable<(typeof receipts)[number]>[];
         const formattedReceipts = successfulReceipts.map((receipt) => {
           return {
-            logs: receipt.logs.map((log) => ({
+            logs: receipt.logs.map((log: any) => ({
               address: log.address,
               data: log.data,
               topics: [...log.topics],
@@ -1649,6 +1685,7 @@ export const disconnectWalletConnectSession = async (topic: string) => {
     status: "disconnected",
     updatedAt: Date.now(),
   };
+  clearWalletConnectSignerOverrideForTopic(normalizedTopic);
   persistKeychain();
 
   return true;

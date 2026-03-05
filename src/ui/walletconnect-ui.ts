@@ -10,6 +10,7 @@ import { Interface } from "ethers";
 import {
   approveWalletConnectSessionRequest,
   approveWalletConnectSessionProposal,
+  setWalletConnectSignerOverrideForTopic,
   clearWalletConnectCapturedBundles,
   disconnectWalletConnectSession,
   getWalletConnectPendingSessionRequests,
@@ -40,6 +41,7 @@ import { getTokenInfo } from "../balance/token-util";
 import { getWrappedTokenInfoForChain } from "../network/network-util";
 import { getProviderForChain } from "../network/network-util";
 import { getRailgunRelayAdaptAddressForChain } from "../network/network-util";
+import { getChainForName } from "../network/network-util";
 import {
   getCrossContract7702GasEstimate,
   getProvedCrossContract7702Transaction,
@@ -635,6 +637,7 @@ const prepareSignerForConnectedSessionAddress = async (context: {
   }
 
   let resolvedAddress: Optional<string>;
+  let resolvedSigner: Optional<any>;
 
   if (context.type === "ephemeral") {
     const encryptionKey = await getSaltedPassword();
@@ -643,6 +646,7 @@ const prepareSignerForConnectedSessionAddress = async (context: {
     }
     const session = await setCurrentEphemeralWalletSession(encryptionKey);
     resolvedAddress = session?.currentAddress?.toLowerCase();
+    resolvedSigner = session?.signer;
   }
 
   if (context.type === "stealth") {
@@ -669,7 +673,8 @@ const prepareSignerForConnectedSessionAddress = async (context: {
         if (indexedAddress === context.connectedAddress.toLowerCase()) {
           matchedScope = scopeID;
           resolvedAddress = indexedAddress;
-          await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+          const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+          resolvedSigner = session?.signer;
           break;
         }
       }
@@ -683,7 +688,8 @@ const prepareSignerForConnectedSessionAddress = async (context: {
         if (indexedAddress === context.connectedAddress.toLowerCase()) {
           matchedScope = "<slot-default>";
           resolvedAddress = indexedAddress;
-          await setCurrentEphemeralWalletSession(encryptionKey);
+          const session = await setCurrentEphemeralWalletSession(encryptionKey);
+          resolvedSigner = session?.signer;
         }
       }
     }
@@ -695,6 +701,7 @@ const prepareSignerForConnectedSessionAddress = async (context: {
         if (currentAddress === context.connectedAddress.toLowerCase()) {
           matchedScope = scopeID;
           resolvedAddress = currentAddress;
+          resolvedSigner = session?.signer;
           break;
         }
       }
@@ -706,6 +713,7 @@ const prepareSignerForConnectedSessionAddress = async (context: {
       if (fallbackAddress === context.connectedAddress.toLowerCase()) {
         matchedScope = "<default>";
         resolvedAddress = fallbackAddress;
+        resolvedSigner = fallback?.signer;
       }
     }
 
@@ -729,6 +737,116 @@ const prepareSignerForConnectedSessionAddress = async (context: {
       `Connected address ${connectedAddress} was not resolved by signer session sync.`,
     );
   }
+
+  if ((context.type === "ephemeral" || context.type === "stealth") && !isDefined(resolvedSigner)) {
+    throw new Error("Resolved signer is unavailable for connected session address.");
+  }
+
+  return resolvedSigner;
+};
+
+const parseRpcQuantityToBigInt = (value: unknown): Optional<bigint> => {
+  if (!isDefined(value)) {
+    return undefined;
+  }
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error("Invalid numeric quantity.");
+    }
+    return BigInt(Math.floor(value));
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized.length) {
+      return undefined;
+    }
+    if (/^0x[0-9a-fA-F]+$/.test(normalized) || /^[0-9]+$/.test(normalized)) {
+      return BigInt(normalized);
+    }
+  }
+  throw new Error("Invalid quantity value.");
+};
+
+const parseRpcQuantityToNumber = (value: unknown): Optional<number> => {
+  const asBigInt = parseRpcQuantityToBigInt(value);
+  if (!isDefined(asBigInt)) {
+    return undefined;
+  }
+  if (asBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("Quantity exceeds safe integer range.");
+  }
+  return Number(asBigInt);
+};
+
+const parseEthSendTransactionInput = (params: unknown) => {
+  if (!Array.isArray(params) || params.length < 1) {
+    throw new Error("Invalid eth_sendTransaction params.");
+  }
+
+  const txLike = params[0] as Record<string, unknown>;
+  if (!isDefined(txLike) || typeof txLike !== "object") {
+    throw new Error("Missing eth_sendTransaction payload.");
+  }
+
+  const requestedAddress =
+    typeof txLike.from === "string" && isHexAddress(txLike.from)
+      ? txLike.from.toLowerCase()
+      : undefined;
+
+  const to = typeof txLike.to === "string" ? txLike.to.trim() : undefined;
+  if (isDefined(to) && to.length && !isHexAddress(to)) {
+    throw new Error("Invalid eth_sendTransaction recipient address.");
+  }
+
+  const currentChain = getChainForName(getCurrentNetwork());
+  const txChainID = parseRpcQuantityToBigInt(txLike.chainId);
+  if (isDefined(txChainID) && txChainID !== BigInt(currentChain.id)) {
+    throw new Error(
+      `eth_sendTransaction chain mismatch. request=0x${txChainID.toString(16)} wallet=0x${BigInt(currentChain.id).toString(16)}`,
+    );
+  }
+
+  return {
+    requestedAddress,
+    transactionRequest: {
+      to,
+      data: typeof txLike.data === "string" ? txLike.data : undefined,
+      value: parseRpcQuantityToBigInt(txLike.value),
+      nonce: parseRpcQuantityToNumber(txLike.nonce),
+      gasLimit: parseRpcQuantityToBigInt(txLike.gas),
+      gasPrice: parseRpcQuantityToBigInt(txLike.gasPrice),
+      maxFeePerGas: parseRpcQuantityToBigInt(txLike.maxFeePerGas),
+      maxPriorityFeePerGas: parseRpcQuantityToBigInt(txLike.maxPriorityFeePerGas),
+      chainId: txChainID,
+    },
+  };
+};
+
+const executeDirectEthSendForConnectedSigner = async (
+  params: unknown,
+  context: { connectedAddress?: string; type: ConnectedAccountType },
+) => {
+  const signer = await prepareSignerForConnectedSessionAddress(context);
+  if (!isDefined(signer)) {
+    throw new Error("Signer unavailable for direct eth_sendTransaction flow.");
+  }
+
+  const { requestedAddress, transactionRequest } = parseEthSendTransactionInput(params);
+  if (
+    isDefined(requestedAddress)
+    && isDefined(context.connectedAddress)
+    && requestedAddress !== context.connectedAddress.toLowerCase()
+  ) {
+    throw new Error(
+      `Requested signer ${requestedAddress} does not match connected WalletConnect address ${context.connectedAddress.toLowerCase()}.`,
+    );
+  }
+
+  const txResponse = await signer.sendTransaction(transactionRequest);
+  return txResponse.hash;
 };
 
 const deriveNFTActionsFromBundledCalls = (
@@ -946,14 +1064,22 @@ const runApproveRequestPrompt = async () => {
       return total;
     }, 0n);
 
-    if (hasEthBalance && bundleNativeValueTotal > 0n) {
+    if (
+      selected.method === "eth_sendTransaction"
+      && hasEthBalance
+      && bundleNativeValueTotal > 0n
+    ) {
       console.log(
         "Detected non-zero call value and available account ETH; routing via public-send so value is funded by connected signer.".yellow,
       );
 
-      await prepareSignerForConnectedSessionAddress(context);
-
-      const approved = await approveWalletConnectSessionRequest(selected.id);
+      const txHash = await executeDirectEthSendForConnectedSigner(
+        selected.params,
+        context,
+      );
+      const approved = await approveWalletConnectSessionRequest(selected.id, {
+        approvedResultOverride: txHash,
+      });
       console.log(
         `Approved request #${approved.id} (${approved.method}) on topic ${approved.topic} via public-send.`.green,
       );
@@ -1006,7 +1132,31 @@ const runApproveRequestPrompt = async () => {
         return;
       }
 
-      await prepareSignerForConnectedSessionAddress(context);
+      const resolvedSigner = await prepareSignerForConnectedSessionAddress(context);
+
+      if (selected.method === "eth_sendTransaction") {
+        const txHash = await executeDirectEthSendForConnectedSigner(
+          selected.params,
+          context,
+        );
+        const approved = await approveWalletConnectSessionRequest(selected.id, {
+          approvedResultOverride: txHash,
+        });
+        console.log(
+          `Approved request #${approved.id} (${approved.method}) on topic ${approved.topic} via public-send.`.green,
+        );
+        return;
+      }
+
+      if (selected.method === "wallet_sendCalls" && isDefined(resolvedSigner)) {
+        setWalletConnectSignerOverrideForTopic(selected.topic, resolvedSigner);
+      }
+
+      const approved = await approveWalletConnectSessionRequest(selected.id);
+      console.log(
+        `Approved request #${approved.id} (${approved.method}) on topic ${approved.topic} via public-send.`.green,
+      );
+      return;
     } else {
       console.log(
         "Stealth/Ephemeral account has no ETH balance: routing to 7702 broadcaster flow.".yellow,

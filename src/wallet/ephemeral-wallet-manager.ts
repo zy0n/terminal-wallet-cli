@@ -422,6 +422,7 @@ export const setCurrentEphemeralWalletSession = async (
   await autoSyncEphemeralIndex(manager);
 
   const currentAccount = await manager.getCurrentAccount(chainId);
+  console.log("CURRENT EPHEMERAL ACCOUNT", currentAccount)
   assertEphemeralAccountSigner(currentAccount);
   const railgunWallet = fullWalletForID(walletID) as RailgunWalletWithEphemeralSignerProvider;
   if (!isDefined(railgunWallet.setCurrentEphemeralWallet)) {
@@ -429,7 +430,6 @@ export const setCurrentEphemeralWalletSession = async (
   }
 
   await railgunWallet.setCurrentEphemeralWallet(currentAccount.signer);
-  walletManager.currentEthersWallet = currentAccount.signer;
 
   const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex(chainId);
   cacheEphemeralState(walletID, currentIndex, currentAccount.address);
@@ -441,6 +441,7 @@ export const setCurrentEphemeralWalletSession = async (
     walletID,
     currentIndex,
     currentAddress: currentAccount.address,
+    signer: currentAccount.signer,
     scopeID: normalizedScopeID,
   };
 };
