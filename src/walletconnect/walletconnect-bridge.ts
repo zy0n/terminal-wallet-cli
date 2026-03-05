@@ -772,34 +772,107 @@ const getConnectedAddressForTopic = (topic: string) => {
 };
 
 const getRequestedCapabilityChainIDs = (params: unknown): string[] => {
-  if (!Array.isArray(params) || params.length < 2) {
-    return [getCurrentChainIDHex()];
+  const addChainIfValid = (value: unknown, output: string[]) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed.length) {
+      return;
+    }
+    if (/^0x[0-9a-f]+$/.test(trimmed) || /^eip155:[0-9]+$/.test(trimmed)) {
+      output.push(trimmed);
+    }
+  };
+
+  const extracted: string[] = [];
+  if (Array.isArray(params)) {
+    for (const param of params) {
+      if (Array.isArray(param)) {
+        param.forEach((entry) => addChainIfValid(entry, extracted));
+        continue;
+      }
+
+      if (isDefined(param) && typeof param === "object") {
+        const chains = (param as { chains?: unknown }).chains;
+        if (Array.isArray(chains)) {
+          chains.forEach((entry) => addChainIfValid(entry, extracted));
+        }
+      }
+
+      addChainIfValid(param, extracted);
+    }
   }
 
-  const maybeChains = params[1];
-  if (!Array.isArray(maybeChains)) {
-    return [getCurrentChainIDHex()];
+  const deduped = [...new Set(extracted)];
+  if (deduped.length) {
+    return deduped;
   }
 
-  const chains = maybeChains
-    .filter((chainID) => {
-      return typeof chainID === "string" && /^0x[0-9a-fA-F]+$/.test(chainID);
-    })
-    .map((chainID) => (chainID as string).toLowerCase());
-
-  return chains.length ? chains : [getCurrentChainIDHex()];
+  return [getCurrentCaipChainID(), getCurrentChainIDHex().toLowerCase()];
 };
 
-const getWalletCapabilitiesResult = (params: unknown) => {
-  const chainIDs = getRequestedCapabilityChainIDs(params);
+const getRequestedCapabilityAddress = (params: unknown): Optional<string> => {
+  if (!Array.isArray(params) || params.length === 0) {
+    return undefined;
+  }
+
+  const first = params[0];
+  if (typeof first !== "string") {
+    return undefined;
+  }
+
+  const normalized = first.trim().toLowerCase();
+  return isHexAddress(normalized) ? normalized : undefined;
+};
+
+const withAlternateChainIDAliases = (chainIDs: string[]) => {
+  const aliases = new Set<string>();
+  for (const chainID of chainIDs) {
+    aliases.add(chainID.toLowerCase());
+    if (/^eip155:[0-9]+$/.test(chainID)) {
+      const decimal = chainID.split(":")[1];
+      aliases.add(`0x${BigInt(decimal).toString(16)}`.toLowerCase());
+    }
+    if (/^0x[0-9a-f]+$/.test(chainID)) {
+      const decimal = BigInt(chainID).toString(10);
+      aliases.add(`eip155:${decimal}`.toLowerCase());
+    }
+  }
+  return [...aliases.values()];
+};
+
+const buildWalletSendCallsCapabilitiesByChain = (chainIDs: string[]) => {
   return chainIDs.reduce<Record<string, Record<string, unknown>>>((acc, chainID) => {
     acc[chainID] = {
       wallet_sendCalls: {
+        supported: true,
         atomic: true,
+      },
+      atomic: {
+        supported: true,
+      },
+      atomicBatch: {
+        supported: true,
       },
     };
     return acc;
   }, {});
+};
+
+const getWalletCapabilitiesResult = (params: unknown) => {
+  const requestedAddress = getRequestedCapabilityAddress(params);
+  const chainIDs = withAlternateChainIDAliases(getRequestedCapabilityChainIDs(params));
+  const byChain = buildWalletSendCallsCapabilitiesByChain(chainIDs);
+
+  if (!isDefined(requestedAddress)) {
+    return byChain;
+  }
+
+  return {
+    [requestedAddress]: byChain,
+    ...byChain,
+  };
 };
 
 const getWalletPermissionsResult = (event: RuntimeSessionRequestEvent) => {
@@ -932,6 +1005,7 @@ const shouldAutoApproveRequestMethod = (method: string) => {
   return [
     "wallet_getCapabilities",
     "wallet_getCallsStatus",
+    "wallet_showCallsStatus",
     "eth_chainId",
     "net_version",
     "eth_accounts",
@@ -1195,9 +1269,14 @@ const buildManualApprovedRequestResult = async (
     const signer = getConnectedWalletSignerForTopic(event.topic, requestedAddress);
 
     const expectedChainID = getCurrentChainIDHex().toLowerCase();
-    if (isDefined(chainIdValue) && chainIdValue !== expectedChainID) {
+    const expectedCaipChainID = getCurrentCaipChainID().toLowerCase();
+    if (
+      isDefined(chainIdValue)
+      && chainIdValue !== expectedChainID
+      && chainIdValue !== expectedCaipChainID
+    ) {
       throw new Error(
-        `wallet_sendCalls chain mismatch. request=${chainIdValue} wallet=${expectedChainID}`,
+        `wallet_sendCalls chain mismatch. request=${chainIdValue} wallet=${expectedCaipChainID}`,
       );
     }
 
@@ -1215,7 +1294,7 @@ const buildManualApprovedRequestResult = async (
     const transactionHashes = txResponses.map((tx) => tx.hash);
     walletSendCallsStatusByID[id] = {
       id,
-      chainId: expectedChainID,
+      chainId: chainIdValue ?? expectedCaipChainID,
       status: 100,
       atomic: true,
       version: "1.0.0",
@@ -1287,6 +1366,9 @@ const buildApprovedRequestResult = (event: RuntimeSessionRequestEvent): Optional
   if (method === "wallet_getCallsStatus") {
     const id = parseWalletGetCallsStatusInput(params);
     return getWalletSendCallsStatusResult(id);
+  }
+  if (method === "wallet_showCallsStatus") {
+    return true;
   }
   if (method === "wallet_getPermissions") {
     return getWalletPermissionsResult(event);
