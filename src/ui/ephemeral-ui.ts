@@ -61,6 +61,31 @@ const shortAddress = (address?: string) => {
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
 };
 
+const isCancelLifecycleError = (error: unknown) => {
+  const message = (error as Error)?.message?.toLowerCase?.() ?? "";
+  return (
+    message.includes("going back")
+    || message.includes("cancel")
+    || message.includes("aborted")
+  );
+};
+
+const runTransactionBuilderSafely = async (
+  chainName: ReturnType<typeof getCurrentNetwork>,
+  transactionType: RailgunTransaction,
+  params: { selections: unknown[]; confirmAmountsDisabled?: boolean },
+) => {
+  try {
+    await runTransactionBuilder(chainName, transactionType, params as any);
+  } catch (error) {
+    if (isCancelLifecycleError(error)) {
+      return;
+    }
+    console.log(`Transaction flow failed: ${(error as Error).message}`.yellow);
+    await confirmPromptCatchRetry("");
+  }
+};
+
 const slotToScopeID = (slot: number) => {
   return `slot-${slot}`;
 };
@@ -269,8 +294,9 @@ const runFundUnshieldERC20ForActiveProfile = async () => {
     return;
   }
 
-  await runTransactionBuilder(chainName, RailgunTransaction.Unshield, {
-    selections: { amountSelections },
+  await runTransactionBuilderSafely(chainName, RailgunTransaction.Unshield, {
+    selections: amountSelections,
+    confirmAmountsDisabled: false,
   });
 };
 
@@ -296,11 +322,10 @@ const runFundUnshieldETHForActiveProfile = async () => {
     return;
   }
 
-  console.log("Note: Unshielding ETH will require an additional step to convert from wrapped ETH to native ETH.".yellow);
-  console.log(amountSelections)
+  await runTransactionBuilderSafely(chainName, RailgunTransaction.UnshieldBase, {
+    selections: amountSelections,
+    confirmAmountsDisabled: false,
 
-  await runTransactionBuilder(chainName, RailgunTransaction.UnshieldBase, {
-    selections: { amountSelections },
   });
 };
 
@@ -385,8 +410,10 @@ const runWithdrawReshieldERC20FromProfile = async () => {
     ].join(" · ").cyan,
   );
 
-  await runTransactionBuilder(chainName, RailgunTransaction.Shield, {
-    selections: { amountSelections },
+  await runTransactionBuilderSafely(chainName, RailgunTransaction.Shield, {
+    selections: amountSelections,
+    confirmAmountsDisabled: false,
+
   });
 };
 
@@ -434,8 +461,10 @@ const runWithdrawReshieldETHFromProfile = async () => {
     ].join(" · ").cyan,
   );
 
-  await runTransactionBuilder(chainName, RailgunTransaction.ShieldBase, {
-    selections: { amountSelections },
+  await runTransactionBuilderSafely(chainName, RailgunTransaction.ShieldBase, {
+    selections: amountSelections,
+    confirmAmountsDisabled: false,
+
   });
 };
 
@@ -582,11 +611,19 @@ const resolveGeneratedStealthProfileAddress = async (
     if (!isDefined(encryptionKey)) {
       return undefined;
     }
-    const updated = await setEphemeralWalletIndex(
-      encryptionKey,
-      slot,
-      derivedScopeID,
-    );
+    let updated;
+    try {
+      updated = await setEphemeralWalletIndex(
+        encryptionKey,
+        slot,
+        derivedScopeID,
+      );
+    } catch (error) {
+      if (!isCancelLifecycleError(error)) {
+        console.log(`Failed to generate address for slot ${slot}: ${(error as Error).message}`.yellow);
+      }
+      return undefined;
+    }
     return updated?.currentAddress;
   }
 
@@ -599,7 +636,15 @@ const resolveGeneratedStealthProfileAddress = async (
   if (!isDefined(encryptionKey)) {
     return undefined;
   }
-  const synced = await syncCurrentEphemeralWallet(encryptionKey, derivedScopeID);
+  let synced;
+  try {
+    synced = await syncCurrentEphemeralWallet(encryptionKey, derivedScopeID);
+  } catch (error) {
+    if (!isCancelLifecycleError(error)) {
+      console.log(`Failed to sync stealth address: ${(error as Error).message}`.yellow);
+    }
+    return undefined;
+  }
   return synced?.currentAddress;
 };
 

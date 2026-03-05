@@ -518,6 +518,8 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
     return;
   }
 
+  const shouldPauseForContinue = selection !== "refresh-card";
+
   try {
     await initializeWalletConnectKit();
 
@@ -549,6 +551,8 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
     console.log(`WalletConnect tools failed: ${(error as Error).message}`.red);
   }
 
-  await confirmPromptCatchRetry("");
+  if (shouldPauseForContinue) {
+    await confirmPromptCatchRetry("");
+  }
   return runWalletConnectManagerPrompt();
 };
