@@ -40,6 +40,27 @@ export type EphemeralWalletCache = {
   lastUpdated: number;
 };
 
+export type EphemeralSessionRatchetBroadcastMode =
+  | "any"
+  | "broadcasted-only"
+  | "self-signed-only";
+
+export type EphemeralSessionRatchetPolicy = {
+  enabled: boolean;
+  broadcastMode: EphemeralSessionRatchetBroadcastMode;
+  ratchetOnTransactions: string[];
+};
+
+export type EphemeralSessionScope = {
+  scopeID: string;
+  policy: EphemeralSessionRatchetPolicy;
+  lastKnownAddress?: string;
+  lastKnownIndex?: number;
+  ratchetCount: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type KnownAddressKey = {
   name: string;
   publicAddress?: string;
@@ -49,11 +70,26 @@ export type KnownAddressKey = {
 
 export type CustomProviderMap = NumMapType<NumMapType<MapType<boolean>>>;
 
+export type WalletConnectSessionState = "paired" | "disconnected";
+
+export type WalletConnectSession = {
+  topic: string;
+  version: number;
+  relayProtocol?: string;
+  connectedAddress?: string;
+  symKeyHash: string;
+  scopeID?: string;
+  createdAt: number;
+  updatedAt: number;
+  status: WalletConnectSessionState;
+};
+
 export type KeychainFile = {
   name: string;
   salt: string;
   wallets?: MapType<WalletCache>;
   ephemeralWallets?: MapType<EphemeralWalletCache>;
+  ephemeralSessionScopes?: MapType<EphemeralSessionScope>;
   knownAddresses?: KnownAddressKey[];
   currentNetwork?: NetworkName;
   selectedWallet?: string;
@@ -62,6 +98,7 @@ export type KeychainFile = {
   responsiveMenu?: boolean;
   hidePrivateInfo?: boolean;
   customProviders?: CustomProviderMap;
+  walletConnectSessions?: MapType<WalletConnectSession>;
   showSenderAddress?: boolean;
 };
 

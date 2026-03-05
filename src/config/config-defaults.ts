@@ -39,6 +39,7 @@ interface ConfigDefaults {
 export default {
   apiKeys: {
     zeroXApi: "",
+    walletConnectProjectId: "2966ff7fbb60b2b73d677261ab1b781e",
   },
   engine: {
     artifactPath: ".artifacts-2.5",

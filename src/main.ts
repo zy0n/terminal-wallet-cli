@@ -20,6 +20,7 @@ const main = async () => {
   await initializeWalletSystems().catch(async (err) => {
     await processSafeExit();
   });
+
   walletBalancePoller();
   runMainMenu();
   latestBalancePoller(10 * 1000);
