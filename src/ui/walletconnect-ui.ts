@@ -1369,7 +1369,16 @@ const buildAndSendCrossContract7702FromBundle = async (
 
   const chainName = getCurrentNetwork();
 
-  const bundleContext = getConnectedAccountContext(selectedBundle.topic);
+  const bundleRequestedFrom = getRequestedFromAddressForRequest(
+    selectedBundle.method,
+    selectedBundle.rawParams,
+  );
+  const bundleContext = isDefined(bundleRequestedFrom)
+    ? {
+      connectedAddress: bundleRequestedFrom,
+      type: getConnectedAccountTypeForAddress(bundleRequestedFrom),
+    }
+    : getConnectedAccountContext(selectedBundle.topic);
   let connectedAddress = bundleContext.connectedAddress;
   if (bundleContext.type === "ephemeral" || bundleContext.type === "stealth") {
     const bundleSigner = await prepareSignerForConnectedSessionAddress(bundleContext);

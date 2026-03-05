@@ -1629,6 +1629,7 @@ export type WalletConnectCapturedBundleView = {
   chainId?: string;
   method: string;
   calls: WalletConnectBundledCall[];
+  rawParams?: unknown;
   createdAt: number;
 };
 
@@ -1643,6 +1644,7 @@ export const listWalletConnectCapturedBundles = (): WalletConnectCapturedBundleV
       chainId: bundle.chainId,
       method: bundle.method,
       calls: bundle.calls,
+      rawParams: bundle.rawParams,
       createdAt: bundle.createdAt,
     }));
 };
