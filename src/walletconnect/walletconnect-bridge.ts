@@ -83,6 +83,15 @@ export type WalletConnectPendingProposalView = {
   optionalNamespaces?: Record<string, unknown>;
 };
 
+export type WalletConnectSessionSummary = {
+  total: number;
+  paired: number;
+  disconnected: number;
+  scoped: number;
+  pendingProposals: number;
+  latestConnectedAddress?: string;
+};
+
 type ApproveWalletConnectProposalOptions = {
   scopeID?: string;
   accountAddress?: string;
@@ -542,6 +551,33 @@ export const listWalletConnectSessions = (): WalletConnectSessionView[] => {
       status: session.status,
       updatedAt: session.updatedAt,
     }));
+};
+
+export const getWalletConnectSessionSummary = (): WalletConnectSessionSummary => {
+  const sessionMap = walletManager.keyChain?.walletConnectSessions ?? {};
+  const sessions = Object.values(sessionMap);
+
+  const total = sessions.length;
+  const paired = sessions.filter((session) => session.status === "paired").length;
+  const disconnected = total - paired;
+  const scoped = sessions.filter((session) => isDefined(session.scopeID)).length;
+
+  const latestConnectedAddress = sessions
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .find((session) => isDefined(session.connectedAddress))?.connectedAddress;
+
+  const pendingProposals = isDefined(walletKit)
+    ? Object.keys(walletKit.getPendingSessionProposals() ?? {}).length
+    : 0;
+
+  return {
+    total,
+    paired,
+    disconnected,
+    scoped,
+    pendingProposals,
+    latestConnectedAddress,
+  };
 };
 
 export const disconnectWalletConnectSession = async (topic: string) => {

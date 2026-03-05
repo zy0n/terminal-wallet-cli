@@ -140,6 +140,18 @@ export const clearScopedEphemeralWalletDerivationStrategy = (scopeID: string) =>
   delete scopedEphemeralDerivationStrategies[normalizedScopeID];
 };
 
+export const hasScopedEphemeralWalletDerivationStrategy = (scopeID: string) => {
+  const normalizedScopeID = normalizeScopeID(scopeID);
+  if (!isDefined(normalizedScopeID)) {
+    return false;
+  }
+  return isDefined(scopedEphemeralDerivationStrategies[normalizedScopeID]);
+};
+
+export const listScopedEphemeralWalletDerivationStrategyScopeIDs = () => {
+  return Object.keys(scopedEphemeralDerivationStrategies).sort();
+};
+
 export const activateScopedEphemeralWalletDerivationStrategy = (
   scopeID: string,
   walletID = getCurrentRailgunID(),

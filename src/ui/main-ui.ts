@@ -79,6 +79,7 @@ import { runTransactionHistoryViewer } from "./transaction-history-ui";
 import { runEphemeralManagerPrompt } from "./ephemeral-ui";
 import { getCurrentKnownEphemeralState } from "../wallet/ephemeral-wallet-manager";
 import { runWalletConnectManagerPrompt } from "./walletconnect-ui";
+import { getWalletConnectSessionSummary } from "../walletconnect/walletconnect-bridge";
 
 const { version } = require("../../package.json");
 
@@ -163,6 +164,8 @@ const HOTKEY_TO_CHOICE: Record<string, string> = {
   y: "public-swap",
   t: "tx-history",
   w: "wallet-tools",
+  d: "stealth-account-manager",
+  f: "walletconnect-card",
   s: "switch-wallet",
   n: "network",
   a: "add-token",
@@ -324,7 +327,7 @@ const runWalletToolsPrompt = async (chainName: NetworkName) => {
     choices: [
       { name: "add-wallet", message: "Add Wallet" },
       { name: "poi-tools", message: "POI Tools" },
-      { name: "ephemeral-wallet-tools", message: "Ephemeral Wallet Tools" },
+      { name: "ephemeral-wallet-tools", message: "Stealth Account Manager" },
       { name: "walletconnect-tools", message: "WalletConnect Tools" },
       {
         name: "show-sender-address",
@@ -483,10 +486,16 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       const shownEphemeralMeta = hidePrivateInfo
         ? "(masked)".dim
         : `(${ephemeralMeta})`.dim;
+      const walletConnectSummary = getWalletConnectSessionSummary();
+      const connectedAddress = shortAddress(walletConnectSummary.latestConnectedAddress);
+      const shownConnectedAddress = hidePrivateInfo
+        ? shortAddress(getFakeAddress(walletConnectSummary.latestConnectedAddress)).grey
+        : connectedAddress.grey;
 
       const walletInfoString = [
         `${"┌─ Wallet".grey} ${walletIdentity}  | (Public) ${publicAddress}`,
         `${"│".grey} (Private) ${privateAddress} | (Ephemeral) ${shownEphemeralAddress} ${shownEphemeralMeta}`,
+        `${"│".grey} (WalletConnect) paired=${walletConnectSummary.paired.toString().green} pending=${walletConnectSummary.pendingProposals.toString().yellow} scope=${walletConnectSummary.scoped.toString().cyan} connected=${shownConnectedAddress}`,
         // `${"│".grey}`,
         // `${"│".grey} `,
         `${"└─".grey}`,
@@ -632,25 +641,71 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         return `${padAnsi(line, 36)} ${`[${hotkey}]`.dim}`;
       });
 
+      const choiceLineByName = this.visible.reduce((acc: Record<string, string>, choice: any, index: number) => {
+        if (!choice?.name || choice?.role === "separator") {
+          return acc;
+        }
+        acc[choice.name] = visibleWithHotkeys[index];
+        return acc;
+      }, {});
+
+      const getChoiceLines = (names: string[]) => {
+        return names
+          .map((name) => choiceLineByName[name])
+          .filter((line) => isDefined(line));
+      };
+
       const leftSections = [
         ...buildMenuSection(
           `${">>".grey} ${"Private".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
-          visibleWithHotkeys.slice(1, 5),
+          getChoiceLines([
+            "private-transfer",
+            "unshield-private-balances",
+            "base-unshield",
+            "launch-mech",
+          ]),
         ),
         ...buildMenuSection(
           `${">>".grey} ${"Public".grey.bold} ${"Actions".grey.bold} ${"<<".grey}`,
-          visibleWithHotkeys.slice(6, 10),
+          getChoiceLines([
+            "shield-public-balances",
+            "base-shield",
+            "public-transfer",
+            "public-base-transfer",
+          ]),
         ),
         ...buildMenuSection(
           `${">>".grey} ${"0X".grey.bold} ${"Swap Tools".grey.bold} ${"<<".grey}`,
-          visibleWithHotkeys.slice(11, 13),
+          getChoiceLines(["private-swap", "public-swap"]),
         ),
       ];
 
       const rightSections = [
         ...buildMenuSection(
+          `${">>".grey} ${"Main Cards".grey.bold} ${"<<".grey}`,
+          getChoiceLines(["walletconnect-card", "stealth-account-manager"]),
+        ),
+        ...buildMenuSection(
           `${">>".grey} ${"Utilities".grey.bold} ${"<<".grey}`,
-          [...visibleWithHotkeys.slice(14, 27), "", visibleWithHotkeys[27]],
+          [
+            ...getChoiceLines([
+              "tx-history",
+              "wallet-tools",
+              "switch-wallet",
+              "network",
+              "add-token",
+              "edit-contact-addresses",
+              "refresh-balances",
+              "toggle-balance",
+              "reset-broadcasters",
+              "edit-rpc",
+              "view-runtime-logs",
+              "toggle-private-info",
+              "toggle-responsive",
+            ]),
+            "",
+            ...getChoiceLines(["exit"]),
+          ],
         ),
       ];
 
@@ -797,6 +852,14 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       {
         message: ` >> ${"Utilities".grey.bold} <<`,
         role: "separator",
+      },
+      {
+        name: "walletconnect-card",
+        message: "WalletConnect Console",
+      },
+      {
+        name: "stealth-account-manager",
+        message: "Stealth Account Manager",
       },
       { name: "tx-history", message: "Transaction History" },
       { name: "wallet-tools", message: "Wallet Tools" },
@@ -1001,6 +1064,14 @@ export const runMainMenu = async () => {
     }
     case "tx-history": {
       await runTransactionHistoryViewer(networkName);
+      break;
+    }
+    case "walletconnect-card": {
+      await runWalletConnectManagerPrompt();
+      break;
+    }
+    case "stealth-account-manager": {
+      await runEphemeralManagerPrompt();
       break;
     }
     case "switch-wallet": {
