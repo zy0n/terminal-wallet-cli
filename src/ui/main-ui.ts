@@ -76,7 +76,11 @@ import { getUILogViewerLines } from "./log-ui";
 
 import { runMechMenu } from "./mech-ui";
 import { runTransactionHistoryViewer } from "./transaction-history-ui";
-import { runEphemeralManagerPrompt } from "./ephemeral-ui";
+import {
+  runEphemeralManagerPrompt,
+  runStealthProfileFundUnshieldPrompt,
+  runStealthProfileWithdrawReshieldPrompt,
+} from "./ephemeral-ui";
 import { getCurrentKnownEphemeralState } from "../wallet/ephemeral-wallet-manager";
 import { runWalletConnectManagerPrompt } from "./walletconnect-ui";
 import { getWalletConnectSessionSummary } from "../walletconnect/walletconnect-bridge";
@@ -166,6 +170,8 @@ const HOTKEY_TO_CHOICE: Record<string, string> = {
   w: "wallet-tools",
   d: "stealth-account-manager",
   f: "walletconnect-card",
+  1: "stealth-fund",
+  2: "stealth-withdraw",
   s: "switch-wallet",
   n: "network",
   a: "add-token",
@@ -686,6 +692,10 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
           getChoiceLines(["walletconnect-card", "stealth-account-manager"]),
         ),
         ...buildMenuSection(
+          `${">>".grey} ${"Stealth Quick".grey.bold} ${"<<".grey}`,
+          getChoiceLines(["stealth-fund", "stealth-withdraw"]),
+        ),
+        ...buildMenuSection(
           `${">>".grey} ${"Utilities".grey.bold} ${"<<".grey}`,
           [
             ...getChoiceLines([
@@ -860,6 +870,14 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       {
         name: "stealth-account-manager",
         message: "Stealth Account Manager",
+      },
+      {
+        name: "stealth-fund",
+        message: "Stealth: Fund Active Profile (Unshield)",
+      },
+      {
+        name: "stealth-withdraw",
+        message: "Stealth: Withdraw Active Profile (Reshield)",
       },
       { name: "tx-history", message: "Transaction History" },
       { name: "wallet-tools", message: "Wallet Tools" },
@@ -1072,6 +1090,14 @@ export const runMainMenu = async () => {
     }
     case "stealth-account-manager": {
       await runEphemeralManagerPrompt();
+      break;
+    }
+    case "stealth-fund": {
+      await runStealthProfileFundUnshieldPrompt();
+      break;
+    }
+    case "stealth-withdraw": {
+      await runStealthProfileWithdrawReshieldPrompt();
       break;
     }
     case "switch-wallet": {

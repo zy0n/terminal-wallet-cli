@@ -8,7 +8,7 @@ import { walletManager } from "./wallet-manager";
 type UpsertStealthProfileInput = {
   id?: string;
   name: string;
-  accountAddress: string;
+  accountAddress?: string;
   scopeID?: string;
   slot?: number;
   signerStrategyScopeID?: string;
@@ -16,11 +16,13 @@ type UpsertStealthProfileInput = {
 
 export type StealthProfileSummary = {
   total: number;
+  linked: number;
   scoped: number;
   slotted: number;
   withSignerScope: number;
   activeProfileID?: string;
   activeAccountAddress?: string;
+  hasActiveLinkedAddress: boolean;
 };
 
 const MAX_NAME_LENGTH = 64;
@@ -61,8 +63,16 @@ const sanitizeScope = (scopeID?: string) => {
   return normalized;
 };
 
-const sanitizeAddress = (address: string) => {
+const sanitizeAddress = (address?: string) => {
+  if (!isDefined(address)) {
+    return undefined;
+  }
+
   const normalized = address.trim().toLowerCase();
+  if (!normalized.length) {
+    return undefined;
+  }
+
   if (!/^0x[0-9a-f]{40}$/.test(normalized)) {
     throw new Error("Stealth profile address must be a valid 0x address.");
   }
@@ -178,10 +188,12 @@ export const getStealthProfileSummary = (): StealthProfileSummary => {
 
   return {
     total: profiles.length,
+    linked: profiles.filter((profile) => isDefined(profile.accountAddress)).length,
     scoped: profiles.filter((profile) => isDefined(profile.scopeID)).length,
     slotted: profiles.filter((profile) => isDefined(profile.slot)).length,
     withSignerScope: profiles.filter((profile) => isDefined(profile.signerStrategyScopeID)).length,
     activeProfileID: active?.id,
     activeAccountAddress: active?.accountAddress,
+    hasActiveLinkedAddress: isDefined(active?.accountAddress),
   };
 };

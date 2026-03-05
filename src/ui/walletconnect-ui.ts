@@ -290,9 +290,13 @@ const runApprovePrompt = async () => {
   }
 
   if (accountSelection === "stealth-profile") {
-    const profiles = listStealthProfiles();
+    const profiles = listStealthProfiles().filter((profile) => {
+      return isDefined(profile.accountAddress);
+    });
     if (!profiles.length) {
-      console.log("Approval canceled (no external stealth profiles configured).".yellow);
+      console.log(
+        "Approval canceled (no linked external stealth profiles configured).".yellow,
+      );
       return;
     }
 
@@ -320,6 +324,10 @@ const runApprovePrompt = async () => {
     const selectedProfile = profiles.find((profile) => profile.id === profileSelection);
     if (!isDefined(selectedProfile)) {
       console.log("Approval canceled (profile not found).".yellow);
+      return;
+    }
+    if (!isDefined(selectedProfile.accountAddress)) {
+      console.log("Approval canceled (selected profile is unlinked).".yellow);
       return;
     }
 

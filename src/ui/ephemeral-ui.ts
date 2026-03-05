@@ -16,6 +16,17 @@ import {
 } from "../wallet/ephemeral-wallet-manager";
 import { RailgunTransaction } from "../models/transaction-models";
 import { getSaltedPassword } from "../wallet/wallet-password";
+import { runTransactionBuilder } from "../transaction/transaction-builder";
+import { getCurrentNetwork } from "../engine/engine";
+import {
+  getCurrentRailgunAddress,
+  getCurrentWalletPublicAddress,
+} from "../wallet/wallet-util";
+import {
+  tokenAmountSelectionPrompt,
+  tokenSelectionPrompt,
+} from "./token-ui";
+import { getWrappedTokenBalance } from "../balance/balance-util";
 import {
   getActiveStealthProfile,
   getStealthProfile,
@@ -154,7 +165,7 @@ const formatStealthProfileLine = (
   profile: {
     id: string;
     name: string;
-    accountAddress: string;
+    accountAddress?: string;
     scopeID?: string;
     slot?: number;
     signerStrategyScopeID?: string;
@@ -172,7 +183,9 @@ const formatStealthProfileLine = (
 
   return [
     `${profile.name}`.cyan,
-    shortAddress(profile.accountAddress),
+    isDefined(profile.accountAddress)
+      ? shortAddress(profile.accountAddress)
+      : "unlinked".yellow,
     scopeTag,
     slotTag,
     signerTag,
@@ -200,6 +213,262 @@ const printStealthProfiles = () => {
   });
 };
 
+const getRequiredActiveStealthProfile = async () => {
+  const activeProfile = getActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    console.log("No active stealth profile selected.".yellow);
+    await confirmPromptCatchRetry("");
+    return undefined;
+  }
+  return activeProfile;
+};
+
+const getRequiredLinkedActiveStealthProfile = async () => {
+  const activeProfile = await getRequiredActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    return undefined;
+  }
+
+  if (!isDefined(activeProfile.accountAddress)) {
+    console.log(
+      "Active profile has no account address. Edit profile and set a 0x address first."
+        .yellow,
+    );
+    await confirmPromptCatchRetry("");
+    return undefined;
+  }
+
+  return activeProfile as typeof activeProfile & { accountAddress: string };
+};
+
+const runFundUnshieldERC20ForActiveProfile = async () => {
+  const activeProfile = await getRequiredLinkedActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    return;
+  }
+
+  const chainName = getCurrentNetwork();
+  const selections = await tokenSelectionPrompt(
+    chainName,
+    "Unshield ERC20 to External Stealth Profile",
+    true,
+    false,
+  );
+
+  const amountSelections = await tokenAmountSelectionPrompt(
+    selections,
+    true,
+    true,
+    true,
+    activeProfile.accountAddress,
+  );
+
+  if (!amountSelections.length) {
+    console.log("No ERC20 amounts selected for unshield.".yellow);
+    await confirmPromptCatchRetry("");
+    return;
+  }
+
+  await runTransactionBuilder(chainName, RailgunTransaction.Unshield, {
+    selections: { amountSelections },
+  });
+};
+
+const runFundUnshieldETHForActiveProfile = async () => {
+  const activeProfile = await getRequiredLinkedActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    return;
+  }
+
+  const chainName = getCurrentNetwork();
+  const wrappedReadableAmount = await getWrappedTokenBalance(chainName);
+  const amountSelections = await tokenAmountSelectionPrompt(
+    [wrappedReadableAmount],
+    true,
+    true,
+    true,
+    activeProfile.accountAddress,
+  );
+
+  if (!amountSelections.length) {
+    console.log("No ETH amount selected for unshield.".yellow);
+    await confirmPromptCatchRetry("");
+    return;
+  }
+
+  console.log("Note: Unshielding ETH will require an additional step to convert from wrapped ETH to native ETH.".yellow);
+  console.log(amountSelections)
+
+  await runTransactionBuilder(chainName, RailgunTransaction.UnshieldBase, {
+    selections: { amountSelections },
+  });
+};
+
+export const runStealthProfileFundUnshieldPrompt = async (): Promise<void> => {
+  const activeProfile = await getRequiredLinkedActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    return;
+  }
+
+  const prompt = new Select({
+    header: buildStealthCardHeader(),
+    message: `Fund Active Profile (${activeProfile.name})`,
+    choices: [
+      { name: "eth", message: "Unshield ETH to active profile" },
+      { name: "erc20", message: "Unshield ERC20 to active profile" },
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return;
+  }
+
+  if (selection === "eth") {
+    await runFundUnshieldETHForActiveProfile();
+    return;
+  }
+
+  await runFundUnshieldERC20ForActiveProfile();
+};
+
+const runWithdrawReshieldERC20FromProfile = async () => {
+  const activeProfile = await getRequiredLinkedActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    return;
+  }
+
+  const currentPublicAddress = getCurrentWalletPublicAddress().toLowerCase();
+  if (activeProfile.accountAddress.toLowerCase() !== currentPublicAddress) {
+    console.log(
+      [
+        "Reshield requires the active signer account to match the active stealth profile address.",
+        `profile=${activeProfile.accountAddress}`,
+        `current=${currentPublicAddress}`,
+      ].join(" ").yellow,
+    );
+    await confirmPromptCatchRetry("");
+    return;
+  }
+
+  const destinationPrivateAddress = getCurrentRailgunAddress();
+  const chainName = getCurrentNetwork();
+
+  const selections = await tokenSelectionPrompt(
+    chainName,
+    "Reshield ERC20 from External Stealth Profile",
+    true,
+    true,
+  );
+
+  const amountSelections = await tokenAmountSelectionPrompt(
+    selections,
+    false,
+    false,
+    true,
+    destinationPrivateAddress,
+  );
+
+  if (!amountSelections.length) {
+    console.log("No ERC20 amounts selected for reshield.".yellow);
+    await confirmPromptCatchRetry("");
+    return;
+  }
+
+  console.log(
+    [
+      `Reshield profile=${activeProfile.name}`,
+      `source-public=${activeProfile.accountAddress}`,
+      `destination-private=${destinationPrivateAddress}`,
+    ].join(" · ").cyan,
+  );
+
+  await runTransactionBuilder(chainName, RailgunTransaction.Shield, {
+    selections: { amountSelections },
+  });
+};
+
+const runWithdrawReshieldETHFromProfile = async () => {
+  const activeProfile = await getRequiredLinkedActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    return;
+  }
+
+  const currentPublicAddress = getCurrentWalletPublicAddress().toLowerCase();
+  if (activeProfile.accountAddress.toLowerCase() !== currentPublicAddress) {
+    console.log(
+      [
+        "Reshield requires the active signer account to match the active stealth profile address.",
+        `profile=${activeProfile.accountAddress}`,
+        `current=${currentPublicAddress}`,
+      ].join(" ").yellow,
+    );
+    await confirmPromptCatchRetry("");
+    return;
+  }
+
+  const destinationPrivateAddress = getCurrentRailgunAddress();
+  const chainName = getCurrentNetwork();
+  const wrappedReadableAmount = await getWrappedTokenBalance(chainName, true);
+  const amountSelections = await tokenAmountSelectionPrompt(
+    [wrappedReadableAmount],
+    false,
+    true,
+    true,
+    destinationPrivateAddress,
+  );
+
+  if (!amountSelections.length) {
+    console.log("No ETH amount selected for reshield.".yellow);
+    await confirmPromptCatchRetry("");
+    return;
+  }
+
+  console.log(
+    [
+      `Reshield profile=${activeProfile.name}`,
+      `source-public=${activeProfile.accountAddress}`,
+      `destination-private=${destinationPrivateAddress}`,
+    ].join(" · ").cyan,
+  );
+
+  await runTransactionBuilder(chainName, RailgunTransaction.ShieldBase, {
+    selections: { amountSelections },
+  });
+};
+
+export const runStealthProfileWithdrawReshieldPrompt = async (): Promise<void> => {
+  const activeProfile = await getRequiredLinkedActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    return;
+  }
+
+  const prompt = new Select({
+    header: buildStealthCardHeader(),
+    message: `Withdraw Active Profile (${activeProfile.name})`,
+    choices: [
+      { name: "eth", message: "Reshield ETH from active profile" },
+      { name: "erc20", message: "Reshield ERC20 from active profile" },
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return;
+  }
+
+  if (selection === "eth") {
+    await runWithdrawReshieldETHFromProfile();
+    return;
+  }
+
+  await runWithdrawReshieldERC20FromProfile();
+};
+
 const buildStealthCardHeader = () => {
   const summary = getStealthProfileSummary();
   const internalState = getCurrentKnownEphemeralState();
@@ -209,7 +478,7 @@ const buildStealthCardHeader = () => {
     `${"┌─ Stealth Account Manager".grey} ${"(Interactive Card)".dim}`,
     `${"│".grey} external-profiles=${summary.total.toString().cyan} active=${
       summary.activeProfileID ? "yes".green : "no".yellow
-    } scoped=${summary.scoped.toString().grey} slotted=${summary.slotted
+    } with-address=${summary.linked.toString().green} scoped=${summary.scoped.toString().grey} slotted=${summary.slotted
       .toString()
       .grey}`,
     `${"│".grey} active-account=${shortAddress(summary.activeAccountAddress)}`,
@@ -225,7 +494,11 @@ const buildStealthCardHeader = () => {
     profiles.forEach((profile) => {
       const activeMark = summary.activeProfileID === profile.id ? "*".green : "-".grey;
       rows.push(
-        `${"│".grey} ${activeMark} ${profile.name} ${shortAddress(profile.accountAddress)} ${
+        `${"│".grey} ${activeMark} ${profile.name} ${
+          isDefined(profile.accountAddress)
+            ? shortAddress(profile.accountAddress)
+            : "unlinked".yellow
+        } ${
           profile.scopeID ? `scope=${profile.scopeID}` : ""
         }`.trimEnd(),
       );
@@ -294,11 +567,47 @@ const promptOptionalText = async (
   return normalized;
 };
 
+const resolveGeneratedStealthProfileAddress = async (
+  slot?: number,
+  scopeID?: string,
+): Promise<Optional<string>> => {
+  const derivedScopeID = isDefined(scopeID)
+    ? scopeID
+    : isDefined(slot)
+    ? slotToScopeID(slot)
+    : undefined;
+
+  if (isDefined(slot)) {
+    const encryptionKey = await getSaltedPassword();
+    if (!isDefined(encryptionKey)) {
+      return undefined;
+    }
+    const updated = await setEphemeralWalletIndex(
+      encryptionKey,
+      slot,
+      derivedScopeID,
+    );
+    return updated?.currentAddress;
+  }
+
+  const knownState = getCurrentKnownEphemeralState();
+  if (isDefined(knownState?.currentAddress)) {
+    return knownState?.currentAddress;
+  }
+
+  const encryptionKey = await getSaltedPassword();
+  if (!isDefined(encryptionKey)) {
+    return undefined;
+  }
+  const synced = await syncCurrentEphemeralWallet(encryptionKey, derivedScopeID);
+  return synced?.currentAddress;
+};
+
 const promptStealthProfileInput = async (
   existing?: {
     id: string;
     name: string;
-    accountAddress: string;
+    accountAddress?: string;
     scopeID?: string;
     slot?: number;
     signerStrategyScopeID?: string;
@@ -315,20 +624,6 @@ const promptStealthProfileInput = async (
     | string
     | undefined;
   if (!isDefined(nameInput)) {
-    return undefined;
-  }
-
-  const addressPrompt = new Input({
-    header: " ",
-    message: "Account address (0x...)",
-    initial: existing?.accountAddress ?? "",
-    validate: (value: string) => /^0x[0-9a-fA-F]{40}$/.test(value.trim()),
-  });
-
-  const addressInput = (await addressPrompt.run().catch(confirmPromptCatch)) as
-    | string
-    | undefined;
-  if (!isDefined(addressInput)) {
     return undefined;
   }
 
@@ -363,10 +658,27 @@ const promptStealthProfileInput = async (
     existing?.signerStrategyScopeID ?? "",
   );
 
+  const generatedAddress = await resolveGeneratedStealthProfileAddress(
+    slot,
+    scopeInput,
+  );
+  if (!isDefined(generatedAddress)) {
+    console.log(
+      "Could not generate stealth account address (wallet password required or generation failed)."
+        .yellow,
+    );
+    await confirmPromptCatchRetry("");
+    return undefined;
+  }
+
+  console.log(
+    `Generated profile account address: ${generatedAddress}`.green,
+  );
+
   return {
     id: existing?.id,
     name: nameInput.trim(),
-    accountAddress: addressInput.trim(),
+    accountAddress: generatedAddress,
     scopeID: scopeInput,
     slot,
     signerStrategyScopeID,
@@ -396,6 +708,46 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
         name: "set-active",
         message: "Set Active Profile",
         disabled: summary.total === 0 ? "No profiles" : false,
+      },
+      {
+        name: "fund-unshield-erc20",
+        message: "Fund Active Profile (Unshield ERC20)",
+        disabled:
+          summary.total === 0
+            ? "No profiles"
+            : !summary.hasActiveLinkedAddress
+            ? "Active profile needs a 0x address"
+            : false,
+      },
+      {
+        name: "fund-unshield-eth",
+        message: "Fund Active Profile (Unshield ETH)",
+        disabled:
+          summary.total === 0
+            ? "No profiles"
+            : !summary.hasActiveLinkedAddress
+            ? "Active profile needs a 0x address"
+            : false,
+      },
+      {
+        name: "withdraw-reshield-erc20",
+        message: "Withdraw Active Profile (Reshield ERC20)",
+        disabled:
+          summary.total === 0
+            ? "No profiles"
+            : !summary.hasActiveLinkedAddress
+            ? "Active profile needs a 0x address"
+            : false,
+      },
+      {
+        name: "withdraw-reshield-eth",
+        message: "Withdraw Active Profile (Reshield ETH)",
+        disabled:
+          summary.total === 0
+            ? "No profiles"
+            : !summary.hasActiveLinkedAddress
+            ? "Active profile needs a 0x address"
+            : false,
       },
       {
         name: "remove-profile",
@@ -437,7 +789,11 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       }
 
       const created = upsertStealthProfile(profileInput);
-      console.log(`Created profile ${created.name} (${created.id}).`.green);
+      setActiveStealthProfile(created.id);
+      console.log(
+        `Created profile ${created.name} (${created.id}) with generated address ${created.accountAddress} and set it active.`
+          .green,
+      );
       await confirmPromptCatchRetry("");
       return runExternalStealthProfileManagerPrompt();
     }
@@ -474,6 +830,22 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       const active = setActiveStealthProfile(profileID);
       console.log(`Active profile set to ${active.name} (${active.id}).`.green);
       await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "fund-unshield-erc20": {
+      await runFundUnshieldERC20ForActiveProfile();
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "fund-unshield-eth": {
+      await runFundUnshieldETHForActiveProfile();
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "withdraw-reshield-erc20": {
+      await runWithdrawReshieldERC20FromProfile();
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "withdraw-reshield-eth": {
+      await runWithdrawReshieldETHFromProfile();
       return runExternalStealthProfileManagerPrompt();
     }
     case "remove-profile": {

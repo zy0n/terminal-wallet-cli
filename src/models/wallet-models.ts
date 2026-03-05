@@ -87,7 +87,7 @@ export type WalletConnectSession = {
 export type StealthProfile = {
   id: string;
   name: string;
-  accountAddress: string;
+  accountAddress?: string;
   scopeID?: string;
   slot?: number;
   signerStrategyScopeID?: string;
