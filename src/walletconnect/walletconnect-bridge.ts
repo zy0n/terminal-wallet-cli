@@ -93,6 +93,7 @@ export type WalletConnectSessionSummary = {
   disconnected: number;
   scoped: number;
   pendingProposals: number;
+  pendingRequests: number;
   capturedBundles: number;
   latestConnectedAddress?: string;
 };
@@ -109,6 +110,35 @@ type RuntimeSessionRequestEvent = {
   };
 };
 
+type RuntimePendingSessionRequest = {
+  id: number;
+  topic: string;
+  params?: {
+    chainId?: string;
+    request?: {
+      method?: string;
+      params?: unknown;
+    };
+  };
+  verifyContext?: {
+    verified?: {
+      origin?: string;
+    };
+  };
+  expiryTimestamp?: number;
+};
+
+type WalletConnectJsonRpcResponse = {
+  id: number;
+  jsonrpc: "2.0";
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+};
+
 type ApproveWalletConnectProposalOptions = {
   scopeID?: string;
   accountAddress?: string;
@@ -119,6 +149,16 @@ export type ApproveWalletConnectProposalResult = {
   scopeID?: string;
   accountAddress: string;
   status: "paired";
+};
+
+export type WalletConnectPendingRequestView = {
+  id: number;
+  topic: string;
+  chainId?: string;
+  method: string;
+  params?: unknown;
+  origin?: string;
+  expiryTimestamp?: number;
 };
 
 const MAX_WC_URI_LENGTH = 4096;
@@ -138,11 +178,14 @@ const getWalletConnectSdk = async (): Promise<any> => {
       import("@walletconnect/core"),
       import("@reown/walletkit"),
       import("@walletconnect/utils"),
-    ]).then(([coreModule, walletKitModule, utilsModule]: any[]) => {
+      import("@walletconnect/jsonrpc-utils"),
+    ]).then(([coreModule, walletKitModule, utilsModule, jsonrpcModule]: any[]) => {
       return {
         Core: coreModule.Core,
         WalletKit: walletKitModule.WalletKit,
         getSdkError: utilsModule.getSdkError,
+        formatJsonRpcResult: jsonrpcModule.formatJsonRpcResult,
+        formatJsonRpcError: jsonrpcModule.formatJsonRpcError,
       };
     });
   }
@@ -418,6 +461,11 @@ const attachWalletKitListeners = (client: any) => {
     );
 
     captureWalletConnectBundle(event);
+
+    pushUILog(
+      `WalletConnect request ${event.id} is pending manual approval/rejection.`,
+      "log",
+    );
   });
 
   client.on("session_delete", (event: { topic: string }) => {
@@ -556,6 +604,111 @@ const getCurrentCaipChainID = () => {
   const networkName = getCurrentNetwork();
   const chain = getChainForName(networkName);
   return `eip155:${chain.id}`;
+};
+
+const getCurrentChainIDHex = () => {
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+  return `0x${BigInt(chain.id).toString(16)}`;
+};
+
+const getCurrentChainIDDecimal = () => {
+  const networkName = getCurrentNetwork();
+  const chain = getChainForName(networkName);
+  return `${chain.id}`;
+};
+
+const getPendingSessionRequestsFromRuntime = (
+  client: any,
+): RuntimePendingSessionRequest[] => {
+  const pending = client.getPendingSessionRequests() as
+    | RuntimePendingSessionRequest[]
+    | Record<string, RuntimePendingSessionRequest>
+    | undefined;
+
+  if (!isDefined(pending)) {
+    return [];
+  }
+
+  if (Array.isArray(pending)) {
+    return pending;
+  }
+
+  return Object.values(pending);
+};
+
+const getPendingSessionRequestByID = async (
+  requestID: number,
+): Promise<RuntimePendingSessionRequest> => {
+  const client = await initializeWalletConnectKit();
+  const pending = getPendingSessionRequestsFromRuntime(client);
+  const request = pending.find((candidate) => candidate.id === requestID);
+  if (!isDefined(request)) {
+    throw new Error(`No pending WalletConnect request found for id ${requestID}.`);
+  }
+  return request;
+};
+
+const getConnectedAddressForTopic = (topic: string) => {
+  const storedAddress = walletManager.keyChain?.walletConnectSessions?.[topic]?.connectedAddress;
+  if (isDefined(storedAddress) && isHexAddress(storedAddress)) {
+    return storedAddress.toLowerCase();
+  }
+
+  if (isDefined(walletKit)) {
+    const activeSessionMap = walletKit.getActiveSessions() as Record<
+      string,
+      RuntimeActiveSession
+    >;
+    const runtimeAddress = extractConnectedAddressFromSession(activeSessionMap[topic]);
+    if (isDefined(runtimeAddress) && isHexAddress(runtimeAddress)) {
+      return runtimeAddress.toLowerCase();
+    }
+  }
+
+  return normalizeWalletConnectAccountAddress(getCurrentWalletPublicAddress());
+};
+
+const buildApprovedRequestResult = (event: RuntimeSessionRequestEvent): Optional<unknown> => {
+  const method = event.params.request.method;
+  if (method === "eth_chainId") {
+    return getCurrentChainIDHex();
+  }
+  if (method === "net_version") {
+    return getCurrentChainIDDecimal();
+  }
+  if (method === "eth_accounts" || method === "eth_requestAccounts") {
+    return [getConnectedAddressForTopic(event.topic)];
+  }
+  return undefined;
+};
+
+const respondToSessionRequest = async (
+  client: any,
+  event: RuntimeSessionRequestEvent,
+) => {
+  const sdk = await getWalletConnectSdk();
+  const approvedResult = buildApprovedRequestResult(event);
+
+  const response: WalletConnectJsonRpcResponse = isDefined(approvedResult)
+    ? sdk.formatJsonRpcResult(event.id, approvedResult)
+    : sdk.formatJsonRpcError(
+      event.id,
+      sdk.getSdkError("USER_REJECTED_METHODS"),
+      `Unsupported method: ${event.params.request.method}`,
+    );
+
+  await client.respondSessionRequest({
+    topic: event.topic,
+    response,
+  });
+
+  pushUILog(
+    isDefined(approvedResult)
+      ? `WalletConnect responded to ${event.params.request.method} on ${event.topic}.`
+      : `WalletConnect rejected ${event.params.request.method} on ${event.topic}.`,
+    "log",
+  );
 };
 
 const getChainsForNamespaceRequirement = (
@@ -719,6 +872,9 @@ export const getWalletConnectSessionSummary = (): WalletConnectSessionSummary =>
   const pendingProposals = isDefined(walletKit)
     ? Object.keys(walletKit.getPendingSessionProposals() ?? {}).length
     : 0;
+  const pendingRequests = isDefined(walletKit)
+    ? getPendingSessionRequestsFromRuntime(walletKit).length
+    : 0;
 
   return {
     total,
@@ -726,8 +882,105 @@ export const getWalletConnectSessionSummary = (): WalletConnectSessionSummary =>
     disconnected,
     scoped,
     pendingProposals,
+    pendingRequests,
     capturedBundles,
     latestConnectedAddress,
+  };
+};
+
+export const getWalletConnectPendingSessionRequests = async (): Promise<
+  WalletConnectPendingRequestView[]
+> => {
+  const client = await initializeWalletConnectKit();
+  return getPendingSessionRequestsFromRuntime(client)
+    .map((request) => {
+      const method = request.params?.request?.method;
+      return {
+        id: request.id,
+        topic: request.topic,
+        chainId: request.params?.chainId,
+        method: isDefined(method) ? method : "unknown",
+        params: request.params?.request?.params,
+        origin: request.verifyContext?.verified?.origin,
+        expiryTimestamp: request.expiryTimestamp,
+      };
+    })
+    .sort((left, right) => right.id - left.id);
+};
+
+export const approveWalletConnectSessionRequest = async (requestID: number) => {
+  const client = await initializeWalletConnectKit();
+  const sdk = await getWalletConnectSdk();
+  const pendingRequest = await getPendingSessionRequestByID(requestID);
+
+  const method = pendingRequest.params?.request?.method ?? "unknown";
+  const requestEvent: RuntimeSessionRequestEvent = {
+    id: pendingRequest.id,
+    topic: pendingRequest.topic,
+    params: {
+      chainId: pendingRequest.params?.chainId,
+      request: {
+        method,
+        params: pendingRequest.params?.request?.params,
+      },
+    },
+  };
+
+  const approvedResult = buildApprovedRequestResult(requestEvent);
+  if (!isDefined(approvedResult)) {
+    throw new Error(
+      `Unsupported manual approval method: ${method}. Reject this request or add method handling.`,
+    );
+  }
+
+  const response: WalletConnectJsonRpcResponse = sdk.formatJsonRpcResult(
+    pendingRequest.id,
+    approvedResult,
+  );
+
+  await client.respondSessionRequest({
+    topic: pendingRequest.topic,
+    response,
+  });
+
+  pushUILog(
+    `WalletConnect request ${requestID} approved for ${method}.`,
+    "log",
+  );
+
+  return {
+    id: pendingRequest.id,
+    topic: pendingRequest.topic,
+    method,
+  };
+};
+
+export const rejectWalletConnectSessionRequest = async (requestID: number) => {
+  const client = await initializeWalletConnectKit();
+  const sdk = await getWalletConnectSdk();
+  const pendingRequest = await getPendingSessionRequestByID(requestID);
+  const method = pendingRequest.params?.request?.method ?? "unknown";
+
+  const response: WalletConnectJsonRpcResponse = sdk.formatJsonRpcError(
+    pendingRequest.id,
+    sdk.getSdkError("USER_REJECTED_METHODS"),
+    `Rejected by user: ${method}`,
+  );
+
+  await client.respondSessionRequest({
+    topic: pendingRequest.topic,
+    response,
+  });
+
+  pushUILog(
+    `WalletConnect request ${requestID} rejected for ${method}.`,
+    "log",
+  );
+
+  return {
+    id: pendingRequest.id,
+    topic: pendingRequest.topic,
+    method,
   };
 };
 

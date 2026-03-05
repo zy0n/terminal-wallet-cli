@@ -1,14 +1,17 @@
 import { isDefined } from "@railgun-community/shared-models";
 import {
+  approveWalletConnectSessionRequest,
   approveWalletConnectSessionProposal,
   clearWalletConnectCapturedBundles,
   disconnectWalletConnectSession,
+  getWalletConnectPendingSessionRequests,
   listWalletConnectCapturedBundles,
   getWalletConnectSessionSummary,
   getWalletConnectPendingSessionProposals,
   initializeWalletConnectKit,
   listWalletConnectSessions,
   pairWalletConnectURI,
+  rejectWalletConnectSessionRequest,
   rejectWalletConnectSessionProposal,
 } from "../walletconnect/walletconnect-bridge";
 import { confirmPrompt, confirmPromptCatch, confirmPromptCatchRetry } from "./confirm-ui";
@@ -74,12 +77,15 @@ const buildWalletConnectCardHeader = async () => {
   const summary = getWalletConnectSessionSummary();
   const sessions = listWalletConnectSessions().slice(0, 3);
   const pendingCount = summary.pendingProposals;
+  const pendingRequestCount = summary.pendingRequests;
 
   const cardRows = [
     `${"┌─ WalletConnect Console".grey} ${"(Interactive Card)".dim}`,
     `${"│".grey} paired=${summary.paired.toString().green} disconnected=${summary.disconnected
       .toString()
-      .grey} scoped=${summary.scoped.toString().cyan} pending=${pendingCount
+      .grey} scoped=${summary.scoped.toString().cyan} proposals=${pendingCount
+      .toString()
+      .yellow} requests=${pendingRequestCount
       .toString()
       .yellow}`,
     `${"│".grey} captured-bundles=${summary.capturedBundles.toString().magenta}`,
@@ -123,6 +129,127 @@ const printPendingWalletConnectProposals = async () => {
       ].join(" · ").grey,
     );
   });
+};
+
+const printPendingWalletConnectRequests = async () => {
+  const requests = await getWalletConnectPendingSessionRequests();
+  if (!requests.length) {
+    console.log("No pending WalletConnect session requests.".yellow);
+    return;
+  }
+
+  requests.forEach((request) => {
+    const expiresAt = isDefined(request.expiryTimestamp)
+      ? new Date(request.expiryTimestamp * 1000).toISOString()
+      : "n/a";
+    console.log(
+      [
+        `Request #${request.id}`,
+        `topic=${request.topic}`,
+        `method=${request.method}`,
+        `chain=${request.chainId ?? "n/a"}`,
+        `origin=${request.origin ?? "n/a"}`,
+        `expires=${expiresAt}`,
+      ].join(" · ").grey,
+    );
+  });
+};
+
+const selectPendingRequestID = async (): Promise<Optional<number>> => {
+  const requests = await getWalletConnectPendingSessionRequests();
+  if (!requests.length) {
+    console.log("No pending WalletConnect session requests.".yellow);
+    return undefined;
+  }
+
+  const prompt = new Select({
+    header: " ",
+    message: "Select pending WalletConnect request",
+    choices: [
+      ...requests.map((request) => ({
+        name: request.id.toString(),
+        message: `#${request.id} ${request.method} (${request.topic.slice(0, 16)}...)`,
+      })),
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return undefined;
+  }
+
+  const requestID = Number(selection);
+  if (!Number.isInteger(requestID)) {
+    return undefined;
+  }
+  return requestID;
+};
+
+const runApproveRequestPrompt = async () => {
+  const requestID = await selectPendingRequestID();
+  if (!isDefined(requestID)) {
+    return;
+  }
+
+  const requests = await getWalletConnectPendingSessionRequests();
+  const selected = requests.find((request) => request.id === requestID);
+  if (!isDefined(selected)) {
+    console.log(`Request #${requestID} not found.`.yellow);
+    return;
+  }
+
+  console.log(
+    [
+      `Request #${selected.id}`,
+      `method=${selected.method}`,
+      `chain=${selected.chainId ?? "n/a"}`,
+      `origin=${selected.origin ?? "n/a"}`,
+    ].join(" · ").yellow,
+  );
+
+  const confirmed = await confirmPrompt(
+    `Approve WalletConnect request #${selected.id}?`,
+    { initial: false },
+  );
+  if (!confirmed) {
+    console.log("Approval canceled.".yellow);
+    return;
+  }
+
+  const approved = await approveWalletConnectSessionRequest(selected.id);
+  console.log(
+    `Approved request #${approved.id} (${approved.method}) on topic ${approved.topic}.`.green,
+  );
+};
+
+const runRejectRequestPrompt = async () => {
+  const requestID = await selectPendingRequestID();
+  if (!isDefined(requestID)) {
+    return;
+  }
+
+  const requests = await getWalletConnectPendingSessionRequests();
+  const selected = requests.find((request) => request.id === requestID);
+  if (!isDefined(selected)) {
+    console.log(`Request #${requestID} not found.`.yellow);
+    return;
+  }
+
+  const confirmed = await confirmPrompt(
+    `Reject WalletConnect request #${selected.id} (${selected.method})?`,
+    { initial: false },
+  );
+  if (!confirmed) {
+    console.log("Rejection canceled.".yellow);
+    return;
+  }
+
+  const rejected = await rejectWalletConnectSessionRequest(selected.id);
+  console.log(
+    `Rejected request #${rejected.id} (${rejected.method}) on topic ${rejected.topic}.`.green,
+  );
 };
 
 const printCapturedWalletConnectBundles = () => {
@@ -530,14 +657,28 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         message: `View Pending Session Proposals (${summary.pendingProposals})`,
       },
       {
+        name: "pending-requests",
+        message: `View Pending Session Requests (${summary.pendingRequests})`,
+      },
+      {
         name: "approve",
         message: `Approve Pending Session Proposal (${summary.pendingProposals})`,
         disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
       },
       {
+        name: "approve-request",
+        message: `Approve Pending Session Request (${summary.pendingRequests})`,
+        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
+      },
+      {
         name: "reject",
         message: `Reject Pending Session Proposal (${summary.pendingProposals})`,
         disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
+      },
+      {
+        name: "reject-request",
+        message: `Reject Pending Session Request (${summary.pendingRequests})`,
+        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
       },
       {
         name: "list",
@@ -585,11 +726,20 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
       case "pending":
         await printPendingWalletConnectProposals();
         break;
+      case "pending-requests":
+        await printPendingWalletConnectRequests();
+        break;
       case "approve":
         await runApprovePrompt();
         break;
+      case "approve-request":
+        await runApproveRequestPrompt();
+        break;
       case "reject":
         await runRejectPrompt();
+        break;
+      case "reject-request":
+        await runRejectRequestPrompt();
         break;
       case "disconnect":
         await runDisconnectPrompt();

@@ -21,6 +21,7 @@ import { runTransactionBuilder } from "../transaction/transaction-builder";
 import { getCurrentNetwork } from "../engine/engine";
 import {
   getCurrentRailgunAddress,
+  getGasBalanceForAddress,
   getCurrentWalletPublicAddress,
 } from "../wallet/wallet-util";
 import {
@@ -42,6 +43,9 @@ import {
   confirmPromptCatch,
   confirmPromptCatchRetry,
 } from "./confirm-ui";
+import { getWrappedTokenInfoForChain } from "../network/network-util";
+import { getERC20Balance } from "../balance/token-util";
+import { formatUnits } from "ethers";
 
 const { Select, Input } = require("enquirer");
 
@@ -60,6 +64,33 @@ const shortAddress = (address?: string) => {
     return "unknown";
   }
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
+};
+
+const formatPublicBalanceSummary = async (address?: string) => {
+  if (!isDefined(address)) {
+    return "n/a";
+  }
+
+  const chainName = getCurrentNetwork();
+  const wrappedInfo = getWrappedTokenInfoForChain(chainName);
+
+  try {
+    const [nativeBalance, wrappedBalance] = await Promise.all([
+      getGasBalanceForAddress(address),
+      getERC20Balance(chainName, wrappedInfo.wrappedAddress, address),
+    ]);
+
+    const nativeReadable = Number(
+      formatUnits(nativeBalance, wrappedInfo.decimals),
+    ).toFixed(6);
+    const wrappedReadable = Number(
+      formatUnits(wrappedBalance, wrappedInfo.decimals),
+    ).toFixed(6);
+
+    return `${wrappedInfo.symbol}=${nativeReadable} · ${wrappedInfo.wrappedSymbol}=${wrappedReadable}`;
+  } catch {
+    return "unavailable";
+  }
 };
 
 const isCancelLifecycleError = (error: unknown) => {
@@ -395,7 +426,7 @@ export const runStealthProfileFundUnshieldPrompt = async (): Promise<void> => {
   }
 
   const prompt = new Select({
-    header: buildStealthCardHeader(),
+    header: await buildStealthCardHeader(),
     message: `Fund Active Profile (${activeProfile.name})`,
     choices: [
       { name: "eth", message: "Unshield ETH to active profile" },
@@ -544,7 +575,7 @@ export const runStealthProfileWithdrawReshieldPrompt = async (): Promise<void> =
   }
 
   const prompt = new Select({
-    header: buildStealthCardHeader(),
+    header: await buildStealthCardHeader(),
     message: `Withdraw Active Profile (${activeProfile.name})`,
     choices: [
       { name: "eth", message: "Reshield ETH from active profile" },
@@ -567,10 +598,14 @@ export const runStealthProfileWithdrawReshieldPrompt = async (): Promise<void> =
   await runWithdrawReshieldERC20FromProfile();
 };
 
-const buildStealthCardHeader = () => {
+const buildStealthCardHeader = async () => {
   const summary = getStealthProfileSummary();
   const internalState = getCurrentKnownEphemeralState();
   const profiles = listStealthProfiles().slice(0, 3);
+  const [activePublicBalances, internalPublicBalances] = await Promise.all([
+    formatPublicBalanceSummary(summary.activeAccountAddress),
+    formatPublicBalanceSummary(internalState?.currentAddress),
+  ]);
 
   const rows = [
     `${"┌─ Stealth Account Manager".grey} ${"(Interactive Card)".dim}`,
@@ -580,9 +615,11 @@ const buildStealthCardHeader = () => {
       .toString()
       .grey}`,
     `${"│".grey} active-account=${shortAddress(summary.activeAccountAddress)}`,
+    `${"│".grey} active-public-balances=${activePublicBalances}`,
     `${"│".grey} internal-railgun-slot=${internalState?.currentIndex ?? "n/a"} internal-address=${shortAddress(
       internalState?.currentAddress,
     )}`,
+    `${"│".grey} internal-public-balances=${internalPublicBalances}`,
   ];
 
   if (!profiles.length) {
@@ -802,7 +839,7 @@ const promptStealthProfileInput = async (
 const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
   const summary = getStealthProfileSummary();
   const prompt = new Select({
-    header: buildStealthCardHeader(),
+    header: await buildStealthCardHeader(),
     message: "External Stealth Profiles",
     choices: [
       {
@@ -1206,11 +1243,15 @@ const runInternalScopeManagerPrompt = async (): Promise<void> => {
 
 const runInternalStealthToolsPrompt = async (): Promise<void> => {
   const state = getCurrentKnownEphemeralState();
+  const internalPublicBalances = await formatPublicBalanceSummary(
+    state?.currentAddress,
+  );
   const prompt = new Select({
     header: [
       "Internal Railgun Stealth Tools",
       `Current Slot: ${state?.currentIndex ?? "n/a"}`,
       `Current Address: ${state?.currentAddress ?? "unknown"}`,
+      `Current Public Balances: ${internalPublicBalances}`,
     ].join("\n"),
     message: "Internal Stealth Tools",
     choices: [
