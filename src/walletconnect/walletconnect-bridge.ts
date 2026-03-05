@@ -97,6 +97,7 @@ export type WalletConnectSessionSummary = {
   pendingProposals: number;
   pendingRequests: number;
   capturedBundles: number;
+  activeConnectedAddress?: string;
   latestConnectedAddress?: string;
 };
 
@@ -1481,18 +1482,32 @@ export const listWalletConnectSessions = (): WalletConnectSessionView[] => {
 export const getWalletConnectSessionSummary = (): WalletConnectSessionSummary => {
   const sessionMap = walletManager.keyChain?.walletConnectSessions ?? {};
   const sessions = Object.values(sessionMap);
+  const pairedSessions = sessions.filter((session) => session.status === "paired");
   const capturedBundles = Object.keys(
     walletManager.keyChain?.walletConnectCapturedBundles ?? {},
   ).length;
 
   const total = sessions.length;
-  const paired = sessions.filter((session) => session.status === "paired").length;
+  const paired = pairedSessions.length;
   const disconnected = total - paired;
   const scoped = sessions.filter((session) => isDefined(session.scopeID)).length;
 
-  const latestConnectedAddress = sessions
+  const latestConnectedAddress = pairedSessions
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .find((session) => isDefined(session.connectedAddress))?.connectedAddress;
+
+  const activeConnectedAddress = Object.entries(walletConnectSignerOverridesByTopic)
+    .filter(([topic, override]) => {
+      if (!isDefined(override?.address)) {
+        return false;
+      }
+      const pairedSession = pairedSessions.find((session) => session.topic === topic);
+      return isDefined(pairedSession);
+    })
+    .sort(([, left], [, right]) => right.updatedAt - left.updatedAt)
+    .map(([, override]) => override.address)
+    .find((address) => isDefined(address))
+    ?? latestConnectedAddress;
 
   const pendingProposals = isDefined(walletKit)
     ? Object.keys(walletKit.getPendingSessionProposals() ?? {}).length
@@ -1509,6 +1524,7 @@ export const getWalletConnectSessionSummary = (): WalletConnectSessionSummary =>
     pendingProposals,
     pendingRequests,
     capturedBundles,
+    activeConnectedAddress,
     latestConnectedAddress,
   };
 };

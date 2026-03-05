@@ -493,9 +493,12 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
         ? "(masked)".dim
         : `(${ephemeralMeta})`.dim;
       const walletConnectSummary = getWalletConnectSessionSummary();
-      const connectedAddress = shortAddress(walletConnectSummary.latestConnectedAddress);
+      const walletConnectAddress =
+        walletConnectSummary.activeConnectedAddress
+        ?? walletConnectSummary.latestConnectedAddress;
+      const connectedAddress = shortAddress(walletConnectAddress);
       const shownConnectedAddress = hidePrivateInfo
-        ? shortAddress(getFakeAddress(walletConnectSummary.latestConnectedAddress)).grey
+        ? shortAddress(getFakeAddress(walletConnectAddress)).grey
         : connectedAddress.grey;
 
       const walletInfoString = [

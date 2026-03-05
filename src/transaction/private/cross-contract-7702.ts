@@ -92,7 +92,6 @@ export const getCrossContract7702GasEstimate = async (
     console.log("Failed to get gas details for cross-contract 7702 transaction.");
     return undefined;
   }
-  console.log(bundledCalls)
   const {
     originalGasDetails,
     feeTokenDetails,

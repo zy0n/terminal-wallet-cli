@@ -31,6 +31,7 @@ import {
 } from "../wallet/wallet-util";
 import {
   getCurrentKnownEphemeralState,
+  getKnownEphemeralAddresses,
   getKnownEphemeralIndexForAddress,
   listEphemeralSessionScopes,
   setEphemeralWalletIndex,
@@ -92,19 +93,18 @@ const getConnectedAccountTypeForAddress = (
   const normalized = connectedAddress.toLowerCase();
   const normalizedPublic = getCurrentWalletPublicAddress().toLowerCase();
   const normalizedEphemeral = getCurrentKnownEphemeralState()?.currentAddress?.toLowerCase();
+  const linkedStealth = listStealthProfiles().some((profile) => {
+    return profile.accountAddress?.toLowerCase() === normalized;
+  });
 
   if (normalized === normalizedPublic) {
     return "public";
   }
-  if (isDefined(normalizedEphemeral) && normalized === normalizedEphemeral) {
-    return "ephemeral";
-  }
-
-  const linkedStealth = listStealthProfiles().some((profile) => {
-    return profile.accountAddress?.toLowerCase() === normalized;
-  });
   if (linkedStealth) {
     return "stealth";
+  }
+  if (isDefined(normalizedEphemeral) && normalized === normalizedEphemeral) {
+    return "ephemeral";
   }
 
   return "other";
@@ -376,7 +376,7 @@ const buildWalletConnectCardHeader = async () => {
       .toString()
       .yellow}`,
     `${"│".grey} captured-bundles=${summary.capturedBundles.toString().magenta}`,
-    `${"│".grey} latest-account=${shortAddress(summary.latestConnectedAddress)}`,
+    `${"│".grey} latest-account=${shortAddress(summary.activeConnectedAddress ?? summary.latestConnectedAddress)}`,
     `${"│".grey} acct: public | ephemeral | stealth | other`,
   ];
 
@@ -630,6 +630,14 @@ const getStealthProfileForAddress = (connectedAddress: string) => {
   });
 };
 
+const getStealthProfileIDForAddress = (connectedAddress?: string): Optional<string> => {
+  if (!isDefined(connectedAddress)) {
+    return undefined;
+  }
+  const profile = getStealthProfileForAddress(connectedAddress);
+  return profile?.id;
+};
+
 const getPreferredScopeForProfile = (profile: {
   scopeID?: string;
   signerStrategyScopeID?: string;
@@ -730,7 +738,11 @@ const prepareSignerForConnectedSessionAddress = async (context: {
         }
       }
 
-      const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+      const session = await setCurrentEphemeralWalletSession(
+        encryptionKey,
+        scopeID,
+        { skipAutoSync: true },
+      );
       if (!isDefined(session)) {
         return undefined;
       }
@@ -773,6 +785,39 @@ const prepareSignerForConnectedSessionAddress = async (context: {
       resolvedSigner = resolved.signer;
       matchedScope = scopeID;
       break;
+    }
+
+    if (!isDefined(resolvedSigner)) {
+      const knownIndices = getKnownEphemeralAddresses().map((entry) => entry.index);
+      const fallbackIndexSet = new Set<number>([...indexCandidates, ...knownIndices]);
+      const highestKnownIndex = fallbackIndexSet.size
+        ? Math.max(...[...fallbackIndexSet.values()])
+        : 0;
+      const fallbackUpperBound = Math.min(Math.max(highestKnownIndex + 8, 32), 128);
+      for (let index = 0; index <= fallbackUpperBound; index += 1) {
+        fallbackIndexSet.add(index);
+      }
+
+      const fallbackIndices = [...fallbackIndexSet.values()].sort((left, right) => {
+        return left - right;
+      });
+
+      for (const scopeID of [...scopeCandidates, undefined]) {
+        for (const index of fallbackIndices) {
+          const resolved = await tryResolveStealthSession(scopeID, index);
+          if (!isDefined(resolved)) {
+            continue;
+          }
+          resolvedAddress = resolved.currentAddress;
+          resolvedSigner = resolved.signer;
+          matchedScope = scopeID;
+          matchedIndex = index;
+          break;
+        }
+        if (isDefined(resolvedSigner)) {
+          break;
+        }
+      }
     }
 
     if (!isDefined(resolvedSigner)) {
@@ -1441,6 +1486,7 @@ const buildAndSendCrossContract7702FromBundle = async (
     ? {
       connectedAddress: bundleRequestedFrom,
       type: getConnectedAccountTypeForAddress(bundleRequestedFrom),
+      stealthProfileID: getStealthProfileIDForAddress(bundleRequestedFrom),
     }
     : getConnectedAccountContext(selectedBundle.topic);
   let { connectedAddress } = bundleContext;

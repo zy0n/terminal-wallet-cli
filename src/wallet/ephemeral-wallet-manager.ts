@@ -408,6 +408,9 @@ export const syncCurrentEphemeralWallet = async (
 export const setCurrentEphemeralWalletSession = async (
   encryptionKey: string,
   scopeID?: string,
+  options?: {
+    skipAutoSync?: boolean;
+  },
 ) => {
   const walletID = getCurrentRailgunID();
   const networkName = getCurrentNetwork();
@@ -419,7 +422,9 @@ export const setCurrentEphemeralWalletSession = async (
   const chainId = BigInt(chain.id);
   const normalizedScopeID = normalizeScopeID(scopeID);
   const manager = getEphemeralKeyManager(walletID, encryptionKey, normalizedScopeID);
-  await autoSyncEphemeralIndex(manager);
+  if (!options?.skipAutoSync) {
+    await autoSyncEphemeralIndex(manager);
+  }
 
   const currentAccount = await manager.getCurrentAccount(chainId);
   console.log("CURRENTACCOUNT UPDATED", currentAccount.address)
