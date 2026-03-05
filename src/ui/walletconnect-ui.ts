@@ -22,9 +22,10 @@ import {
   rejectWalletConnectSessionProposal,
 } from "../walletconnect/walletconnect-bridge";
 import { confirmPrompt, confirmPromptCatch, confirmPromptCatchRetry } from "./confirm-ui";
-import { getCurrentWalletPublicAddress } from "../wallet/wallet-util";
 import {
+  getCurrentWalletPublicAddress,
   getCurrentRailgunAddress,
+  getGasBalanceForAddress,
 } from "../wallet/wallet-util";
 import {
   getCurrentKnownEphemeralState,
@@ -55,6 +56,36 @@ const shortAddress = (address?: string) => {
     return "n/a";
   }
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
+};
+
+type ConnectedAccountType = "public" | "ephemeral" | "stealth" | "other";
+
+const getConnectedAccountTypeForAddress = (
+  connectedAddress?: string,
+): ConnectedAccountType => {
+  if (!isDefined(connectedAddress)) {
+    return "other";
+  }
+
+  const normalized = connectedAddress.toLowerCase();
+  const normalizedPublic = getCurrentWalletPublicAddress().toLowerCase();
+  const normalizedEphemeral = getCurrentKnownEphemeralState()?.currentAddress?.toLowerCase();
+
+  if (normalized === normalizedPublic) {
+    return "public";
+  }
+  if (isDefined(normalizedEphemeral) && normalized === normalizedEphemeral) {
+    return "ephemeral";
+  }
+
+  const linkedStealth = listStealthProfiles().some((profile) => {
+    return profile.accountAddress?.toLowerCase() === normalized;
+  });
+  if (linkedStealth) {
+    return "stealth";
+  }
+
+  return "other";
 };
 
 const isHexAddress = (value: string) => /^0x[0-9a-fA-F]{40}$/.test(value);
@@ -324,6 +355,7 @@ const buildWalletConnectCardHeader = async () => {
       .yellow}`,
     `${"│".grey} captured-bundles=${summary.capturedBundles.toString().magenta}`,
     `${"│".grey} latest-account=${shortAddress(summary.latestConnectedAddress)}`,
+    `${"│".grey} acct: public | ephemeral | stealth | other`,
   ];
 
   if (!sessions.length) {
@@ -332,10 +364,11 @@ const buildWalletConnectCardHeader = async () => {
     cardRows.push(`${"│".grey} recent sessions:`);
     sessions.forEach((session) => {
       const statusColor = session.status === "paired" ? "green" : "grey";
+      const accountType = getConnectedAccountTypeForAddress(session.connectedAddress);
       cardRows.push(
         `${"│".grey} - ${session.topic.slice(0, 16)}... ${
           session.status[statusColor]
-        } ${session.scopeID ? `scope=${session.scopeID}` : ""}`.trimEnd(),
+        } ${`acct=${accountType}`.cyan} ${session.scopeID ? `scope=${session.scopeID}` : ""}`.trimEnd(),
       );
     });
   }
@@ -376,11 +409,13 @@ const printPendingWalletConnectRequests = async () => {
     const expiresAt = isDefined(request.expiryTimestamp)
       ? new Date(request.expiryTimestamp * 1000).toISOString()
       : "n/a";
+    const accountType = getConnectedAccountContext(request.topic).type;
     console.log(
       [
         `Request #${request.id}`,
         `topic=${request.topic}`,
         `method=${request.method}`,
+        `acct=${accountType}`,
         `chain=${request.chainId ?? "n/a"}`,
         `origin=${request.origin ?? "n/a"}`,
         `expires=${expiresAt}`,
@@ -421,6 +456,35 @@ const selectPendingRequestID = async (): Promise<Optional<number>> => {
   return requestID;
 };
 
+const isTxExecutionMethod = (method: string) => {
+  return method === "eth_sendTransaction" || method === "wallet_sendCalls";
+};
+
+const getConnectedAccountContext = (topic: string): {
+  connectedAddress?: string;
+  type: ConnectedAccountType;
+} => {
+  const sessions = listWalletConnectSessions();
+  const connectedAddress = sessions.find((session) => {
+    return session.topic === topic;
+  })?.connectedAddress?.toLowerCase();
+
+  if (!isDefined(connectedAddress)) {
+    return { connectedAddress: undefined, type: "other" };
+  }
+
+  return {
+    connectedAddress,
+    type: getConnectedAccountTypeForAddress(connectedAddress),
+  };
+};
+
+const getCapturedBundleForRequest = (requestID: number, topic: string) => {
+  return listWalletConnectCapturedBundles().find((bundle) => {
+    return bundle.requestId === requestID && bundle.topic === topic;
+  });
+};
+
 const runApproveRequestPrompt = async () => {
   const requestID = await selectPendingRequestID();
   if (!isDefined(requestID)) {
@@ -440,6 +504,7 @@ const runApproveRequestPrompt = async () => {
       `method=${selected.method}`,
       `chain=${selected.chainId ?? "n/a"}`,
       `origin=${selected.origin ?? "n/a"}`,
+      `acct=${getConnectedAccountContext(selected.topic).type}`,
     ].join(" · ").yellow,
   );
 
@@ -458,6 +523,94 @@ const runApproveRequestPrompt = async () => {
   if (!confirmed) {
     console.log("Approval canceled.".yellow);
     return;
+  }
+
+  const context = getConnectedAccountContext(selected.topic);
+  if (
+    isTxExecutionMethod(selected.method)
+    && (context.type === "ephemeral" || context.type === "stealth")
+  ) {
+    if (!isDefined(context.connectedAddress)) {
+      console.log(
+        "Connected session address is missing; unable to route request policy.".yellow,
+      );
+      return;
+    }
+
+    const gasBalance = await getGasBalanceForAddress(context.connectedAddress);
+    const hasEthBalance = gasBalance > 0n;
+
+    if (hasEthBalance) {
+      const executionPrompt = new Select({
+        header: " ",
+        message: "Stealth/Ephemeral account has ETH. Choose execution path",
+        choices: [
+          {
+            name: "public-send",
+            message: "Public Send (direct signer send for this connected account)",
+          },
+          {
+            name: "broadcaster-7702",
+            message: "Broadcaster 7702 Relay (cross-contract call bundle)",
+          },
+          { name: "cancel", message: "Cancel".grey },
+        ],
+        multiple: false,
+      });
+
+      const executionSelection = await executionPrompt.run().catch(confirmPromptCatch);
+      if (!executionSelection || executionSelection === "cancel") {
+        console.log("Approval canceled.".yellow);
+        return;
+      }
+
+      if (executionSelection === "broadcaster-7702") {
+        const capturedBundle = getCapturedBundleForRequest(selected.id, selected.topic);
+        if (!isDefined(capturedBundle) || !capturedBundle.calls.length) {
+          console.log(
+            "No captured bundle found for this request. Use public send or capture request again.".yellow,
+          );
+          return;
+        }
+
+        const txHash = await buildAndSendCrossContract7702FromBundle(capturedBundle);
+        if (!isDefined(txHash)) {
+          return;
+        }
+
+        const approved = await approveWalletConnectSessionRequest(selected.id, {
+          approvedResultOverride: txHash,
+        });
+        console.log(
+          `Approved request #${approved.id} (${approved.method}) via 7702 broadcaster on topic ${approved.topic}.`.green,
+        );
+        return;
+      }
+    } else {
+      console.log(
+        "Stealth/Ephemeral account has no ETH balance: routing to 7702 broadcaster flow.".yellow,
+      );
+      const capturedBundle = getCapturedBundleForRequest(selected.id, selected.topic);
+      if (!isDefined(capturedBundle) || !capturedBundle.calls.length) {
+        console.log(
+          "No captured bundle found for this request. Cannot run 7702 broadcaster flow.".yellow,
+        );
+        return;
+      }
+
+      const txHash = await buildAndSendCrossContract7702FromBundle(capturedBundle);
+      if (!isDefined(txHash)) {
+        return;
+      }
+
+      const approved = await approveWalletConnectSessionRequest(selected.id, {
+        approvedResultOverride: txHash,
+      });
+      console.log(
+        `Approved request #${approved.id} (${approved.method}) via 7702 broadcaster on topic ${approved.topic}.`.green,
+      );
+      return;
+    }
   }
 
   const approved = await approveWalletConnectSessionRequest(selected.id);
@@ -562,21 +715,22 @@ const selectCapturedBundle = async (): Promise<
   return bundles.find((bundle) => bundle.key === selectedKey);
 };
 
-const runBuildCrossContract7702FromBundlePrompt = async () => {
-  const selectedBundle = await selectCapturedBundle();
+const buildAndSendCrossContract7702FromBundle = async (
+  selectedBundle: ReturnType<typeof listWalletConnectCapturedBundles>[number],
+): Promise<Optional<string>> => {
   if (!isDefined(selectedBundle)) {
-    return;
+    return undefined;
   }
   if (!selectedBundle.calls.length) {
     console.log("Selected bundle has no executable calls.".yellow);
-    return;
+    return undefined;
   }
 
   const chainName = getCurrentNetwork();
   const encryptionKey = await getSaltedPassword();
   if (!isDefined(encryptionKey)) {
     console.log("Canceled (missing wallet password).".yellow);
-    return;
+    return undefined;
   }
 
   const unshieldERC20Amounts = await parseERC20AmountArray();
@@ -616,7 +770,7 @@ const runBuildCrossContract7702FromBundlePrompt = async () => {
     console.log(
       "No 7702-capable broadcaster available for selected fee token/route.".yellow,
     );
-    return;
+    return undefined;
   }
 
   const privateGasEstimate = await getCrossContract7702GasEstimate(
@@ -631,7 +785,7 @@ const runBuildCrossContract7702FromBundlePrompt = async () => {
   );
   if (!isDefined(privateGasEstimate)) {
     console.log("Failed to estimate gas for 7702 cross-contract bundle.".yellow);
-    return;
+    return undefined;
   }
 
   const provedTransaction = await getProvedCrossContract7702Transaction(
@@ -645,7 +799,7 @@ const runBuildCrossContract7702FromBundlePrompt = async () => {
   );
   if (!isDefined(provedTransaction)) {
     console.log("Failed to generate 7702 cross-contract proof/transaction.".yellow);
-    return;
+    return undefined;
   }
 
   const shouldSend = await confirmPrompt(
@@ -654,10 +808,10 @@ const runBuildCrossContract7702FromBundlePrompt = async () => {
   );
   if (!shouldSend) {
     console.log("Built 7702 transaction; send canceled by user.".yellow);
-    return;
+    return undefined;
   }
 
-  await sendBroadcastedTransaction(
+  const sendResult = await sendBroadcastedTransaction(
     RailgunTransaction.Private0XSwap,
     provedTransaction,
     bestBroadcaster,
@@ -665,9 +819,27 @@ const runBuildCrossContract7702FromBundlePrompt = async () => {
     encryptionKey,
   );
 
+  const txHash =
+    typeof sendResult === "string"
+      ? sendResult
+      : (sendResult as Optional<{ hash?: string }>)?.hash;
+  if (!isDefined(txHash) || !txHash.length) {
+    throw new Error("Failed to resolve transaction hash from broadcast send result.");
+  }
+
   console.log(
     `Submitted 7702 cross-contract transaction for bundle #${selectedBundle.requestId}.`.green,
   );
+  return txHash;
+};
+
+const runBuildCrossContract7702FromBundlePrompt = async () => {
+  const selectedBundle = await selectCapturedBundle();
+  if (!isDefined(selectedBundle)) {
+    return;
+  }
+
+  await buildAndSendCrossContract7702FromBundle(selectedBundle);
 };
 
 const toStringArray = (value: unknown): string[] => {

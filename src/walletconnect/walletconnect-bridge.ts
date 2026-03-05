@@ -311,12 +311,22 @@ const getBundledCallsForRequest = (
 
   if (method === "wallet_sendCalls") {
     const root = Array.isArray(params) ? params[0] : params;
-    const maybeCalls = (root as any)?.calls;
-    if (!Array.isArray(maybeCalls)) {
-      return [];
-    }
 
-    return maybeCalls
+    const maybeCallsFromRoot = (root as any)?.calls;
+    const maybeCallsFromParams = (params as any)?.calls;
+    const maybeCallsDirect = Array.isArray(params)
+      ? params
+      : undefined;
+
+    const callsSource = Array.isArray(maybeCallsFromRoot)
+      ? maybeCallsFromRoot
+      : Array.isArray(maybeCallsFromParams)
+        ? maybeCallsFromParams
+        : Array.isArray(maybeCallsDirect)
+          ? maybeCallsDirect
+          : [];
+
+    return callsSource
       .map((callLike) => mapTxLikeToBundledCall(callLike))
       .filter((call) => isDefined(call)) as WalletConnectBundledCall[];
   }
@@ -324,8 +334,21 @@ const getBundledCallsForRequest = (
   return [];
 };
 
+const shouldCaptureWalletConnectBundleMethod = (method: string) => {
+  return [
+    "personal_sign",
+    "eth_signTypedData_v4",
+    "eth_sendTransaction",
+    "wallet_sendCalls",
+  ].includes(method);
+};
+
 const captureWalletConnectBundle = (event: RuntimeSessionRequestEvent) => {
   const method = event.params.request.method;
+  if (!shouldCaptureWalletConnectBundleMethod(method)) {
+    return;
+  }
+
   const params = event.params.request.params;
   const calls = getBundledCallsForRequest(method, params);
 
@@ -736,7 +759,11 @@ const getRequestedCapabilityChainIDs = (params: unknown): string[] => {
 const getWalletCapabilitiesResult = (params: unknown) => {
   const chainIDs = getRequestedCapabilityChainIDs(params);
   return chainIDs.reduce<Record<string, Record<string, unknown>>>((acc, chainID) => {
-    acc[chainID] = {};
+    acc[chainID] = {
+      wallet_sendCalls: {
+        atomic: true,
+      },
+    };
     return acc;
   }, {});
 };
@@ -1470,7 +1497,14 @@ export const getWalletConnectPendingSessionRequests = async (): Promise<
     .sort((left, right) => right.id - left.id);
 };
 
-export const approveWalletConnectSessionRequest = async (requestID: number) => {
+export type ApproveWalletConnectRequestOptions = {
+  approvedResultOverride?: unknown;
+};
+
+export const approveWalletConnectSessionRequest = async (
+  requestID: number,
+  options?: ApproveWalletConnectRequestOptions,
+) => {
   const client = await initializeWalletConnectKit();
   const sdk = await getWalletConnectSdk();
   const pendingRequest = await getPendingSessionRequestByID(requestID);
@@ -1488,7 +1522,10 @@ export const approveWalletConnectSessionRequest = async (requestID: number) => {
     },
   };
 
-  let approvedResult = buildApprovedRequestResult(requestEvent);
+  let approvedResult = options?.approvedResultOverride;
+  if (!isDefined(approvedResult)) {
+    approvedResult = buildApprovedRequestResult(requestEvent);
+  }
   if (!isDefined(approvedResult)) {
     approvedResult = await buildManualApprovedRequestResult(requestEvent);
   }
