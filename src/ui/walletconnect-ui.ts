@@ -40,7 +40,6 @@ import { getCurrentNetwork } from "../engine/engine";
 import { getTokenInfo } from "../balance/token-util";
 import { getWrappedTokenInfoForChain } from "../network/network-util";
 import { getProviderForChain } from "../network/network-util";
-import { getRailgunRelayAdaptAddressForChain } from "../network/network-util";
 import { getChainForName } from "../network/network-util";
 import {
   getCrossContract7702GasEstimate,
@@ -1299,11 +1298,20 @@ const buildAndSendCrossContract7702FromBundle = async (
 
   const chainName = getCurrentNetwork();
 
-  const sessions = listWalletConnectSessions();
-  const connectedAddress = sessions.find((session) => {
-    return session.topic === selectedBundle.topic;
-  })?.connectedAddress;
-  const relayAdaptAddress = connectedAddress; //getRailgunRelayAdaptAddressForChain(chainName);
+  const bundleContext = getConnectedAccountContext(selectedBundle.topic);
+  let connectedAddress = bundleContext.connectedAddress;
+  if (bundleContext.type === "ephemeral" || bundleContext.type === "stealth") {
+    const bundleSigner = await prepareSignerForConnectedSessionAddress(bundleContext);
+    const signerAddress = bundleSigner?.address?.toLowerCase();
+    if (isDefined(signerAddress)) {
+      connectedAddress = signerAddress;
+      console.log(
+        `Using ${bundleContext.type} signer ${signerAddress} for 7702 bundle build.`.grey,
+      );
+    }
+  }
+
+  const relayAdaptAddress = connectedAddress;
 
   const eoaPreflightPassed = await runBundledCallPreflight(
     chainName,

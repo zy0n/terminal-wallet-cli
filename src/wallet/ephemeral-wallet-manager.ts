@@ -422,7 +422,6 @@ export const setCurrentEphemeralWalletSession = async (
   await autoSyncEphemeralIndex(manager);
 
   const currentAccount = await manager.getCurrentAccount(chainId);
-  console.log("CURRENT EPHEMERAL ACCOUNT", currentAccount)
   assertEphemeralAccountSigner(currentAccount);
   const railgunWallet = fullWalletForID(walletID) as RailgunWalletWithEphemeralSignerProvider;
   if (!isDefined(railgunWallet.setCurrentEphemeralWallet)) {
