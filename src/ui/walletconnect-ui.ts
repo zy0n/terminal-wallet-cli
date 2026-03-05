@@ -1,4 +1,11 @@
-import { isDefined } from "@railgun-community/shared-models";
+import {
+  isDefined,
+  type RailgunERC20Amount,
+  type RailgunERC20AmountRecipient,
+  type RailgunERC20Recipient,
+  type RailgunNFTAmount,
+  type RailgunNFTAmountRecipient,
+} from "@railgun-community/shared-models";
 import {
   approveWalletConnectSessionRequest,
   approveWalletConnectSessionProposal,
@@ -17,10 +24,23 @@ import {
 import { confirmPrompt, confirmPromptCatch, confirmPromptCatchRetry } from "./confirm-ui";
 import { getCurrentWalletPublicAddress } from "../wallet/wallet-util";
 import {
+  getCurrentRailgunAddress,
+} from "../wallet/wallet-util";
+import {
   getCurrentKnownEphemeralState,
   syncCurrentEphemeralWallet,
 } from "../wallet/ephemeral-wallet-manager";
 import { getSaltedPassword } from "../wallet/wallet-password";
+import { getCurrentNetwork } from "../engine/engine";
+import { getTokenInfo } from "../balance/token-util";
+import {
+  getCrossContract7702GasEstimate,
+  getProvedCrossContract7702Transaction,
+} from "../transaction/private/cross-contract-7702";
+import { runFeeTokenSelector } from "./token-ui";
+import { sendBroadcastedTransaction } from "../transaction/transaction-builder";
+import { RailgunTransaction } from "../models/transaction-models";
+import { WalletConnectBundledCall } from "../models/wallet-models";
 import {
   getActiveStealthProfile,
   listStealthProfiles,
@@ -35,6 +55,220 @@ const shortAddress = (address?: string) => {
     return "n/a";
   }
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
+};
+
+const isHexAddress = (value: string) => /^0x[0-9a-fA-F]{40}$/.test(value);
+
+const parseBigIntLike = (value: unknown): bigint => {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error("Invalid numeric value.");
+    }
+    return BigInt(Math.floor(value));
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^0x[0-9a-fA-F]+$/.test(trimmed)) {
+      return BigInt(trimmed);
+    }
+    if (/^[0-9]+$/.test(trimmed)) {
+      return BigInt(trimmed);
+    }
+  }
+  throw new Error("Expected bigint-like value (decimal or hex string).");
+};
+
+const parseOptionalJSONArray = async <T>(
+  message: string,
+  parser: (item: unknown, index: number) => T,
+): Promise<T[]> => {
+  const prompt = new Input({
+    header: " ",
+    message,
+  });
+
+  const raw = (await prompt.run().catch(confirmPromptCatch)) as string | undefined;
+  if (!isDefined(raw)) {
+    return [];
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed.length) {
+    return [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error("Invalid JSON input.");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Input must be a JSON array.");
+  }
+
+  return parsed.map(parser);
+};
+
+const parseERC20AmountArray = async (): Promise<RailgunERC20Amount[]> => {
+  return parseOptionalJSONArray<RailgunERC20Amount>(
+    "Optional unshield ERC20 JSON (blank for none): [{\"tokenAddress\":\"0x...\",\"amount\":\"1000000000000000000\"}]",
+    (item, index) => {
+      const tokenAddress = (item as any)?.tokenAddress;
+      const amount = (item as any)?.amount;
+      if (typeof tokenAddress !== "string" || !isHexAddress(tokenAddress.trim())) {
+        throw new Error(`Invalid ERC20 tokenAddress at index ${index}.`);
+      }
+      const parsedAmount = parseBigIntLike(amount);
+      if (parsedAmount <= 0n) {
+        throw new Error(`ERC20 amount must be > 0 at index ${index}.`);
+      }
+
+      return {
+        tokenAddress: tokenAddress.trim().toLowerCase(),
+        amount: parsedAmount,
+      };
+    },
+  );
+};
+
+const parseERC20RecipientArray = async (): Promise<RailgunERC20Recipient[]> => {
+  return parseOptionalJSONArray<RailgunERC20Recipient>(
+    "Optional shield ERC20 JSON (blank for none): [{\"tokenAddress\":\"0x...\",\"recipientAddress\":\"railgun:...\"}]",
+    (item, index) => {
+      const tokenAddress = (item as any)?.tokenAddress;
+      const recipientAddress = (item as any)?.recipientAddress;
+      if (typeof tokenAddress !== "string" || !isHexAddress(tokenAddress.trim())) {
+        throw new Error(`Invalid shield ERC20 tokenAddress at index ${index}.`);
+      }
+      if (typeof recipientAddress !== "string" || !recipientAddress.trim().length) {
+        throw new Error(`Invalid shield ERC20 recipientAddress at index ${index}.`);
+      }
+
+      return {
+        tokenAddress: tokenAddress.trim().toLowerCase(),
+        recipientAddress: recipientAddress.trim(),
+      };
+    },
+  );
+};
+
+const parseNFTAmountArray = async (): Promise<RailgunNFTAmount[]> => {
+  return parseOptionalJSONArray<RailgunNFTAmount>(
+    "Optional unshield NFT JSON (blank for none): [{\"nftAddress\":\"0x...\",\"tokenSubID\":\"1\",\"amount\":\"1\",\"nftTokenType\":1}]",
+    (item, index) => {
+      const nftAddress = (item as any)?.nftAddress;
+      const tokenSubID = (item as any)?.tokenSubID;
+      const amount = (item as any)?.amount;
+      const nftTokenType = (item as any)?.nftTokenType;
+
+      if (typeof nftAddress !== "string" || !isHexAddress(nftAddress.trim())) {
+        throw new Error(`Invalid NFT address at index ${index}.`);
+      }
+      const parsedTokenSubID = parseBigIntLike(tokenSubID);
+      const parsedAmount = parseBigIntLike(amount);
+      const parsedTokenType = Number(nftTokenType);
+      if (parsedAmount <= 0n) {
+        throw new Error(`NFT amount must be > 0 at index ${index}.`);
+      }
+      if (![1, 2].includes(parsedTokenType)) {
+        throw new Error(`NFT token type must be 1 (ERC721) or 2 (ERC1155) at index ${index}.`);
+      }
+
+      return {
+        nftAddress: nftAddress.trim().toLowerCase(),
+        tokenSubID: parsedTokenSubID.toString(),
+        amount: parsedAmount,
+        nftTokenType: parsedTokenType,
+      } as RailgunNFTAmount;
+    },
+  );
+};
+
+const parseNFTRecipientArray = async (): Promise<RailgunNFTAmountRecipient[]> => {
+  return parseOptionalJSONArray<RailgunNFTAmountRecipient>(
+    "Optional shield NFT JSON (blank for none): [{\"nftAddress\":\"0x...\",\"tokenSubID\":\"1\",\"amount\":\"1\",\"recipientAddress\":\"railgun:...\",\"nftTokenType\":1}]",
+    (item, index) => {
+      const nftAddress = (item as any)?.nftAddress;
+      const tokenSubID = (item as any)?.tokenSubID;
+      const amount = (item as any)?.amount;
+      const recipientAddress = (item as any)?.recipientAddress;
+      const nftTokenType = (item as any)?.nftTokenType;
+
+      if (typeof nftAddress !== "string" || !isHexAddress(nftAddress.trim())) {
+        throw new Error(`Invalid shield NFT address at index ${index}.`);
+      }
+      if (typeof recipientAddress !== "string" || !recipientAddress.trim().length) {
+        throw new Error(`Invalid shield NFT recipientAddress at index ${index}.`);
+      }
+
+      const parsedTokenSubID = parseBigIntLike(tokenSubID);
+      const parsedAmount = parseBigIntLike(amount);
+      const parsedTokenType = Number(nftTokenType);
+      if (parsedAmount <= 0n) {
+        throw new Error(`Shield NFT amount must be > 0 at index ${index}.`);
+      }
+      if (![1, 2].includes(parsedTokenType)) {
+        throw new Error(`Shield NFT token type must be 1 (ERC721) or 2 (ERC1155) at index ${index}.`);
+      }
+
+      return {
+        nftAddress: nftAddress.trim().toLowerCase(),
+        tokenSubID: parsedTokenSubID.toString(),
+        amount: parsedAmount,
+        recipientAddress: recipientAddress.trim(),
+        nftTokenType: parsedTokenType,
+      } as RailgunNFTAmountRecipient;
+    },
+  );
+};
+
+const collectAutoShieldERC20Recipients = async (
+  chainName: ReturnType<typeof getCurrentNetwork>,
+  bundleCalls: WalletConnectBundledCall[],
+  currentShieldRecipients: RailgunERC20Recipient[],
+  unshieldERC20Amounts: RailgunERC20Amount[],
+) => {
+  const currentRailgunAddress = getCurrentRailgunAddress();
+  const existingTokenSet = new Set(
+    currentShieldRecipients.map((recipient) => recipient.tokenAddress.toLowerCase()),
+  );
+
+  unshieldERC20Amounts.forEach((entry) => {
+    existingTokenSet.add(entry.tokenAddress.toLowerCase());
+  });
+
+  const interactedCandidates = new Set<string>();
+  bundleCalls.forEach((call) => {
+    const normalized = call.to?.trim().toLowerCase();
+    if (normalized && isHexAddress(normalized)) {
+      interactedCandidates.add(normalized);
+    }
+  });
+
+  const autoRecipients: RailgunERC20Recipient[] = [];
+  for (const tokenAddress of interactedCandidates) {
+    if (existingTokenSet.has(tokenAddress)) {
+      continue;
+    }
+
+    const tokenInfo = await getTokenInfo(chainName, tokenAddress).catch(() => undefined);
+    if (!isDefined(tokenInfo)) {
+      continue;
+    }
+
+    autoRecipients.push({
+      tokenAddress,
+      recipientAddress: currentRailgunAddress,
+    });
+    existingTokenSet.add(tokenAddress);
+  }
+
+  return autoRecipients;
 };
 
 const formatSessionLine = (session: {
@@ -296,6 +530,144 @@ const printCapturedWalletConnectBundles = () => {
       );
     });
   });
+};
+
+const selectCapturedBundle = async (): Promise<
+  Optional<ReturnType<typeof listWalletConnectCapturedBundles>[number]>
+> => {
+  const bundles = listWalletConnectCapturedBundles();
+  if (!bundles.length) {
+    console.log("No captured WalletConnect bundles yet.".yellow);
+    return undefined;
+  }
+
+  const prompt = new Select({
+    header: " ",
+    message: "Select captured bundle",
+    choices: [
+      ...bundles.map((bundle) => ({
+        name: bundle.key,
+        message: `#${bundle.requestId} ${bundle.method} · ${bundle.calls.length} call(s) · ${bundle.topic.slice(0, 16)}...`,
+      })),
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selectedKey = await prompt.run().catch(confirmPromptCatch);
+  if (!selectedKey || selectedKey === "exit-menu") {
+    return undefined;
+  }
+
+  return bundles.find((bundle) => bundle.key === selectedKey);
+};
+
+const runBuildCrossContract7702FromBundlePrompt = async () => {
+  const selectedBundle = await selectCapturedBundle();
+  if (!isDefined(selectedBundle)) {
+    return;
+  }
+  if (!selectedBundle.calls.length) {
+    console.log("Selected bundle has no executable calls.".yellow);
+    return;
+  }
+
+  const chainName = getCurrentNetwork();
+  const encryptionKey = await getSaltedPassword();
+  if (!isDefined(encryptionKey)) {
+    console.log("Canceled (missing wallet password).".yellow);
+    return;
+  }
+
+  const unshieldERC20Amounts = await parseERC20AmountArray();
+  const unshieldNFTAmounts = await parseNFTAmountArray();
+  const shieldERC20Recipients = await parseERC20RecipientArray();
+  const shieldNFTRecipients = await parseNFTRecipientArray();
+
+  const autoShieldRecipients = await collectAutoShieldERC20Recipients(
+    chainName,
+    selectedBundle.calls,
+    shieldERC20Recipients,
+    unshieldERC20Amounts,
+  );
+  if (autoShieldRecipients.length) {
+    console.log(
+      `Auto-shielding ${autoShieldRecipients.length} interacted ERC20 token(s) to current Railgun address.`.grey,
+    );
+    shieldERC20Recipients.push(...autoShieldRecipients);
+  }
+
+  const amountRecipients: RailgunERC20AmountRecipient[] = unshieldERC20Amounts.map(
+    (entry) => ({
+      tokenAddress: entry.tokenAddress,
+      amount: entry.amount,
+      recipientAddress: getCurrentRailgunAddress(),
+    }),
+  );
+
+  const broadcasterSelection = await runFeeTokenSelector(
+    chainName,
+    amountRecipients,
+    undefined,
+    true,
+  );
+  const bestBroadcaster = broadcasterSelection?.bestBroadcaster;
+  if (!isDefined(bestBroadcaster)) {
+    console.log(
+      "No 7702-capable broadcaster available for selected fee token/route.".yellow,
+    );
+    return;
+  }
+
+  const privateGasEstimate = await getCrossContract7702GasEstimate(
+    chainName,
+    selectedBundle.calls,
+    encryptionKey,
+    bestBroadcaster,
+    unshieldERC20Amounts,
+    unshieldNFTAmounts,
+    shieldERC20Recipients,
+    shieldNFTRecipients,
+  );
+  if (!isDefined(privateGasEstimate)) {
+    console.log("Failed to estimate gas for 7702 cross-contract bundle.".yellow);
+    return;
+  }
+
+  const provedTransaction = await getProvedCrossContract7702Transaction(
+    encryptionKey,
+    selectedBundle.calls,
+    privateGasEstimate,
+    unshieldERC20Amounts,
+    unshieldNFTAmounts,
+    shieldERC20Recipients,
+    shieldNFTRecipients,
+  );
+  if (!isDefined(provedTransaction)) {
+    console.log("Failed to generate 7702 cross-contract proof/transaction.".yellow);
+    return;
+  }
+
+  const shouldSend = await confirmPrompt(
+    `Send built 7702 transaction for bundle #${selectedBundle.requestId}?`,
+    { initial: true },
+  );
+  if (!shouldSend) {
+    console.log("Built 7702 transaction; send canceled by user.".yellow);
+    return;
+  }
+
+  await sendBroadcastedTransaction(
+    RailgunTransaction.Private0XSwap,
+    provedTransaction,
+    bestBroadcaster,
+    chainName,
+    encryptionKey,
+  );
+
+  console.log(
+    `Submitted 7702 cross-contract transaction for bundle #${selectedBundle.requestId}.`.green,
+  );
 };
 
 const toStringArray = (value: unknown): string[] => {
@@ -702,6 +1074,11 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         message: `View Captured Bundles (${summary.capturedBundles})`,
       },
       {
+        name: "build-7702",
+        message: `Build 7702 Tx from Captured Bundle (${summary.capturedBundles})`,
+        disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
+      },
+      {
         name: "clear-bundles",
         message: "Clear Captured Bundles",
         disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
@@ -754,6 +1131,9 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         break;
       case "bundles":
         printCapturedWalletConnectBundles();
+        break;
+      case "build-7702":
+        await runBuildCrossContract7702FromBundlePrompt();
         break;
       case "clear-bundles": {
         const cleared = clearWalletConnectCapturedBundles();
