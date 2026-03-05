@@ -6,6 +6,7 @@ import {
   type RailgunNFTAmount,
   type RailgunNFTAmountRecipient,
 } from "@railgun-community/shared-models";
+import { Interface } from "ethers";
 import {
   approveWalletConnectSessionRequest,
   approveWalletConnectSessionProposal,
@@ -50,6 +51,16 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Input, Select } = require("enquirer");
+
+const ERC721_TRANSFER_INTERFACE = new Interface([
+  "function transferFrom(address from, address to, uint256 tokenId)",
+  "function safeTransferFrom(address from, address to, uint256 tokenId)",
+  "function safeTransferFrom(address from, address to, uint256 tokenId, bytes data)",
+]);
+
+const ERC1155_TRANSFER_INTERFACE = new Interface([
+  "function safeTransferFrom(address from, address to, uint256 id, uint256 value, bytes data)",
+]);
 
 const shortAddress = (address?: string) => {
   if (!isDefined(address) || address.length < 12) {
@@ -485,6 +496,87 @@ const getCapturedBundleForRequest = (requestID: number, topic: string) => {
   });
 };
 
+const deriveNFTActionsFromBundledCalls = (
+  calls: WalletConnectBundledCall[],
+  recipientAddress: string,
+): {
+  unshieldNFTAmounts: RailgunNFTAmount[];
+  shieldNFTRecipients: RailgunNFTAmountRecipient[];
+} => {
+  const unshieldNFTAmounts: RailgunNFTAmount[] = [];
+  const shieldNFTRecipients: RailgunNFTAmountRecipient[] = [];
+  const seen = new Set<string>();
+
+  const pushNFT = (
+    nftAddress: string,
+    tokenSubID: bigint,
+    amount: bigint,
+    nftTokenType: 1 | 2,
+  ) => {
+    if (amount <= 0n) {
+      return;
+    }
+
+    const normalizedAddress = nftAddress.toLowerCase();
+    const tokenSubIDString = tokenSubID.toString();
+    const key = `${normalizedAddress}:${tokenSubIDString}:${amount.toString()}:${nftTokenType}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+
+    unshieldNFTAmounts.push({
+      nftAddress: normalizedAddress,
+      tokenSubID: tokenSubIDString,
+      amount,
+      nftTokenType,
+    } as RailgunNFTAmount);
+
+    shieldNFTRecipients.push({
+      nftAddress: normalizedAddress,
+      tokenSubID: tokenSubIDString,
+      amount,
+      recipientAddress,
+      nftTokenType,
+    } as RailgunNFTAmountRecipient);
+  };
+
+  calls.forEach((call) => {
+    const to = call.to?.trim();
+    const data = call.data?.trim();
+    if (!to || !isHexAddress(to) || !data || !/^0x[0-9a-fA-F]+$/.test(data)) {
+      return;
+    }
+
+    try {
+      const parsed1155 = ERC1155_TRANSFER_INTERFACE.parseTransaction({ data });
+      if (parsed1155?.name === "safeTransferFrom") {
+        const tokenSubID = BigInt(parsed1155.args[2].toString());
+        const amount = BigInt(parsed1155.args[3].toString());
+        pushNFT(to, tokenSubID, amount, 2);
+        return;
+      }
+    } catch {
+      // not an ERC1155 transfer
+    }
+
+    try {
+      const parsed721 = ERC721_TRANSFER_INTERFACE.parseTransaction({ data });
+      if (
+        parsed721?.name === "transferFrom"
+        || parsed721?.name === "safeTransferFrom"
+      ) {
+        const tokenSubID = BigInt(parsed721.args[2].toString());
+        pushNFT(to, tokenSubID, 1n, 1);
+      }
+    } catch {
+      // not an ERC721 transfer
+    }
+  });
+
+  return { unshieldNFTAmounts, shieldNFTRecipients };
+};
+
 const runApproveRequestPrompt = async () => {
   const requestID = await selectPendingRequestID();
   if (!isDefined(requestID)) {
@@ -734,28 +826,53 @@ const buildAndSendCrossContract7702FromBundle = async (
   }
 
   const unshieldERC20Amounts = await parseERC20AmountArray();
-  const unshieldNFTAmounts = await parseNFTAmountArray();
-  const shieldERC20Recipients = await parseERC20RecipientArray();
-  const shieldNFTRecipients = await parseNFTRecipientArray();
+  let shieldERC20Recipients = await parseERC20RecipientArray();
+  const currentRailgunAddress = getCurrentRailgunAddress();
 
-  const autoShieldRecipients = await collectAutoShieldERC20Recipients(
-    chainName,
-    selectedBundle.calls,
-    shieldERC20Recipients,
-    unshieldERC20Amounts,
-  );
-  if (autoShieldRecipients.length) {
+  let {
+    unshieldNFTAmounts,
+    shieldNFTRecipients,
+  } = deriveNFTActionsFromBundledCalls(selectedBundle.calls, currentRailgunAddress);
+  if (unshieldNFTAmounts.length) {
     console.log(
-      `Auto-shielding ${autoShieldRecipients.length} interacted ERC20 token(s) to current Railgun address.`.grey,
+      `Detected ${unshieldNFTAmounts.length} NFT transfer(s) from bundled calls; auto-adding NFT unshield/shield entries.`.grey,
     );
-    shieldERC20Recipients.push(...autoShieldRecipients);
+  }
+
+  const hasUnshieldActions =
+    unshieldERC20Amounts.length > 0 || unshieldNFTAmounts.length > 0;
+  let includeReshield = true;
+  if (hasUnshieldActions) {
+    includeReshield = await confirmPrompt(
+      "Unshield detected. Re-shield remaining assets after execution?",
+      { initial: false },
+    );
+  }
+
+  if (includeReshield) {
+    const autoShieldRecipients = await collectAutoShieldERC20Recipients(
+      chainName,
+      selectedBundle.calls,
+      shieldERC20Recipients,
+      unshieldERC20Amounts,
+    );
+    if (autoShieldRecipients.length) {
+      console.log(
+        `Auto-shielding ${autoShieldRecipients.length} interacted ERC20 token(s) to current Railgun address.`.grey,
+      );
+      shieldERC20Recipients.push(...autoShieldRecipients);
+    }
+  } else {
+    shieldERC20Recipients = [];
+    shieldNFTRecipients = [];
+    console.log("Proceeding without re-shield outputs.".yellow);
   }
 
   const amountRecipients: RailgunERC20AmountRecipient[] = unshieldERC20Amounts.map(
     (entry) => ({
       tokenAddress: entry.tokenAddress,
       amount: entry.amount,
-      recipientAddress: getCurrentRailgunAddress(),
+      recipientAddress: currentRailgunAddress,
     }),
   );
 
