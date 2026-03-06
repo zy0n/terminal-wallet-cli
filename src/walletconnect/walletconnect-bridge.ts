@@ -14,7 +14,7 @@ import { pushUILog } from "../ui/log-ui";
 import { getCurrentWalletPublicAddress } from "../wallet/wallet-util";
 import { getCurrentEthersWallet } from "../wallet/public-utils";
 import { getCurrentNetwork } from "../engine/engine";
-import { getChainForName } from "../network/network-util";
+import { getChainForName, getProviderForChain } from "../network/network-util";
 
 type ParsedWalletConnectURI = {
   topic: string;
@@ -1092,11 +1092,65 @@ const parseWalletGetCallsStatusInput = (params: unknown) => {
   return id.trim();
 };
 
-const getWalletSendCallsStatusResult = (id: string) => {
+const refreshWalletSendCallsStatusEntry = async (id: string) => {
   const entry = walletSendCallsStatusByID[id];
   if (!isDefined(entry)) {
     throw walletCallUnknownBundleID(`Unknown wallet_sendCalls id: ${id}`);
   }
+
+  if (entry.status !== 100 || !entry.transactionHashes.length) {
+    return entry;
+  }
+
+  const provider = getProviderForChain(getCurrentNetwork()) as any;
+  const receipts = await Promise.all(
+    entry.transactionHashes.map((hash) => {
+      return provider.getTransactionReceipt(hash).catch(() => undefined);
+    }),
+  );
+
+  const minedReceipts = receipts.filter((receipt) => {
+    return isDefined(receipt);
+  }) as NonNullable<(typeof receipts)[number]>[];
+
+  if (!minedReceipts.length) {
+    return entry;
+  }
+
+  const formattedReceipts = minedReceipts.map((receipt) => {
+    return {
+      logs: receipt.logs.map((log: any) => ({
+        address: log.address,
+        data: log.data,
+        topics: [...log.topics],
+      })),
+      status: toRpcHex(receipt.status ?? 0),
+      blockHash: receipt.blockHash,
+      blockNumber: toRpcHex(receipt.blockNumber),
+      gasUsed: toRpcHex(receipt.gasUsed),
+      transactionHash: receipt.hash,
+    };
+  });
+
+  const hasFailure = minedReceipts.some((receipt) => (receipt.status ?? 0) !== 1);
+  const allMined = minedReceipts.length === entry.transactionHashes.length;
+
+  walletSendCallsStatusByID[id] = {
+    ...entry,
+    receipts: formattedReceipts,
+    status: allMined
+      ? hasFailure
+        ? (entry.atomic ? 500 : 600)
+        : 200
+      : 100,
+    updatedAt: Date.now(),
+  };
+
+  return walletSendCallsStatusByID[id];
+};
+
+const getWalletSendCallsStatusResult = async (id: string) => {
+  const entry = await refreshWalletSendCallsStatusEntry(id);
 
   return {
     atomic: entry.atomic,
@@ -1477,7 +1531,9 @@ const buildManualApprovedRequestResult = async (
   return undefined;
 };
 
-const buildApprovedRequestResult = (event: RuntimeSessionRequestEvent): Optional<unknown> => {
+const buildApprovedRequestResult = async (
+  event: RuntimeSessionRequestEvent,
+): Promise<Optional<unknown>> => {
   const { method, params } = event.params.request;
 
   if (method === "wallet_getCapabilities") {
@@ -1523,7 +1579,7 @@ const respondToSessionRequest = async (
   let response: WalletConnectJsonRpcResponse;
 
   try {
-    const approvedResult = buildApprovedRequestResult(event);
+    const approvedResult = await buildApprovedRequestResult(event);
     response = isDefined(approvedResult)
       ? sdk.formatJsonRpcResult(event.id, approvedResult)
       : sdk.formatJsonRpcError(
@@ -1787,7 +1843,7 @@ export const approveWalletConnectSessionRequest = async (
 
   let approvedResult = options?.approvedResultOverride;
   if (!isDefined(approvedResult)) {
-    approvedResult = buildApprovedRequestResult(requestEvent);
+    approvedResult = await buildApprovedRequestResult(requestEvent);
   }
   if (!isDefined(approvedResult)) {
     approvedResult = await buildManualApprovedRequestResult(requestEvent);

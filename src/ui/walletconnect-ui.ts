@@ -62,7 +62,7 @@ import {
 } from "../wallet/stealth-profile-manager";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { Input, Select } = require("enquirer");
+const { Input, Select, MultiSelect } = require("enquirer");
 
 const ERC721_TRANSFER_INTERFACE = new Interface([
   "function transferFrom(address from, address to, uint256 tokenId)",
@@ -324,6 +324,66 @@ const collectAutoShieldERC20Recipients = async (
   return autoRecipients;
 };
 
+const normalizeAndDedupeERC20Recipients = (
+  recipients: RailgunERC20Recipient[],
+): RailgunERC20Recipient[] => {
+  const dedupedRecipients: RailgunERC20Recipient[] = [];
+  const seenTokenAddresses = new Set<string>();
+
+  recipients.forEach((recipient) => {
+    const normalizedTokenAddress = recipient.tokenAddress?.trim?.().toLowerCase();
+    if (!normalizedTokenAddress || !isHexAddress(normalizedTokenAddress)) {
+      return;
+    }
+    if (seenTokenAddresses.has(normalizedTokenAddress)) {
+      return;
+    }
+
+    seenTokenAddresses.add(normalizedTokenAddress);
+    dedupedRecipients.push({
+      ...recipient,
+      tokenAddress: normalizedTokenAddress,
+    });
+  });
+
+  return dedupedRecipients;
+};
+
+const promptAutoReshieldTokenSelection = async (
+  recipients: RailgunERC20Recipient[],
+): Promise<RailgunERC20Recipient[]> => {
+  if (!recipients.length) {
+    return [];
+  }
+
+  const uniqueRecipients = normalizeAndDedupeERC20Recipients(recipients);
+  if (!uniqueRecipients.length) {
+    return [];
+  }
+
+  const prompt = new MultiSelect({
+    header: " ",
+    message: "Select detected ERC20 tokens to re-shield",
+    choices: uniqueRecipients.map((recipient) => ({
+      name: recipient.tokenAddress,
+      message: recipient.tokenAddress,
+      enabled: true,
+    })),
+  });
+
+  const selection = (await prompt.run().catch(confirmPromptCatch)) as
+    | string[]
+    | undefined;
+  if (!Array.isArray(selection) || !selection.length) {
+    return [];
+  }
+
+  const selectedSet = new Set(selection.map((entry) => entry.toLowerCase()));
+  return uniqueRecipients.filter((recipient) =>
+    selectedSet.has(recipient.tokenAddress.toLowerCase()),
+  );
+};
+
 const formatSessionLine = (session: {
   topic: string;
   version: number;
@@ -549,6 +609,84 @@ const getRequestedFromAddressForRequest = (
   }
 
   return undefined;
+};
+
+const getUnsupportedBundleFieldsFor7702 = (
+  method: string,
+  params: unknown,
+): string[] => {
+  const unsupported = new Set<string>();
+
+  const addUnsupported = (label: string) => {
+    if (label.trim().length) {
+      unsupported.add(label);
+    }
+  };
+
+  if (method === "eth_sendTransaction") {
+    const txLike = Array.isArray(params) ? params[0] : params;
+    if (!isDefined(txLike) || typeof txLike !== "object") {
+      return [];
+    }
+
+    const tx = txLike as Record<string, unknown>;
+    if (isDefined(tx.accessList)) {
+      addUnsupported("accessList");
+    }
+    if (isDefined(tx.authorizationList)) {
+      addUnsupported("authorizationList");
+    }
+    if (isDefined(tx.maxFeePerBlobGas) || isDefined(tx.blobVersionedHashes)) {
+      addUnsupported("blob tx fields");
+    }
+
+    return [...unsupported.values()];
+  }
+
+  if (method === "wallet_sendCalls") {
+    const root = Array.isArray(params) ? params[0] : params;
+    if (!isDefined(root) || typeof root !== "object") {
+      return [];
+    }
+
+    const envelope = root as {
+      capabilities?: unknown;
+      atomicRequired?: unknown;
+      calls?: unknown;
+    };
+
+    if (isDefined(envelope.capabilities)) {
+      addUnsupported("top-level capabilities");
+    }
+    if (envelope.atomicRequired === false) {
+      addUnsupported("atomicRequired=false");
+    }
+
+    const calls = Array.isArray(envelope.calls) ? envelope.calls : [];
+    calls.forEach((rawCall, index) => {
+      if (!isDefined(rawCall) || typeof rawCall !== "object") {
+        return;
+      }
+
+      const call = rawCall as Record<string, unknown>;
+      if (isDefined(call.capabilities)) {
+        addUnsupported(`call[${index}] capabilities`);
+      }
+      if (isDefined(call.operation) && Number(call.operation) !== 0) {
+        addUnsupported(`call[${index}] operation!=0`);
+      }
+      if (isDefined(call.accessList)) {
+        addUnsupported(`call[${index}] accessList`);
+      }
+      if (isDefined(call.authorizationList)) {
+        addUnsupported(`call[${index}] authorizationList`);
+      }
+    });
+
+    return [...unsupported.values()];
+  }
+
+  return [];
 };
 
 const getSigningContextForRequest = (
@@ -1149,10 +1287,12 @@ const promptReshieldERC20RecipientsFromPrivateSelection = async (
   }
 
   const recipientAddress = getCurrentRailgunAddress();
-  return selectedBalances.map((entry: any) => ({
-    tokenAddress: entry.tokenAddress,
-    recipientAddress,
-  }));
+  return normalizeAndDedupeERC20Recipients(
+    selectedBalances.map((entry: any) => ({
+      tokenAddress: entry.tokenAddress,
+      recipientAddress,
+    })),
+  );
 };
 
 const runBundledCallPreflight = async (
@@ -1555,6 +1695,24 @@ const buildAndSendCrossContract7702FromBundle = async (
     return undefined;
   }
 
+  const unsupportedBundleFields = getUnsupportedBundleFieldsFor7702(
+    selectedBundle.method,
+    selectedBundle.rawParams,
+  );
+  if (unsupportedBundleFields.length) {
+    console.log(
+      `Bundle includes fields not represented in 7702 builder call model: ${unsupportedBundleFields.join(", ")}.`
+        .yellow,
+    );
+    const continueIgnoringUnsupported = await confirmPrompt(
+      "Continue and ignore unsupported bundle fields?",
+      { initial: false },
+    );
+    if (!continueIgnoringUnsupported) {
+      return undefined;
+    }
+  }
+
   const chainName = getCurrentNetwork();
 
   const bundleRequestedFrom = getRequestedFromAddressForRequest(
@@ -1663,11 +1821,19 @@ const buildAndSendCrossContract7702FromBundle = async (
       unshieldERC20Amounts,
     );
     if (autoShieldRecipients.length) {
-      console.log(
-        `Auto-shielding ${autoShieldRecipients.length} interacted ERC20 token(s) to current Railgun address.`.grey,
+      const selectedAutoShieldRecipients = await promptAutoReshieldTokenSelection(
+        autoShieldRecipients,
       );
-      shieldERC20Recipients.push(...autoShieldRecipients);
+      if (selectedAutoShieldRecipients.length) {
+        console.log(
+          `Selected ${selectedAutoShieldRecipients.length} detected ERC20 token(s) to re-shield.`.grey,
+        );
+        shieldERC20Recipients.push(...selectedAutoShieldRecipients);
+      } else {
+        console.log("No detected ERC20 tokens selected for re-shield.".yellow);
+      }
     }
+    shieldERC20Recipients = normalizeAndDedupeERC20Recipients(shieldERC20Recipients);
   } else {
     shieldERC20Recipients = [];
     shieldNFTRecipients = [];
@@ -2214,6 +2380,7 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         message: "Clear Captured Bundles",
         disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
       },
+      { name: "mech-test", message: "test 7702 mech pilot".cyan },
       { name: "refresh-card", message: "Repaint Card".cyan },
       { name: "exit-menu", message: "Go Back".grey },
     ],
@@ -2224,7 +2391,7 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
   if (!selection || selection === "exit-menu") {
     return;
   }
-
+  // await launchPilotUI(mechAddress, balances);
   const shouldPauseForContinue = selection !== "refresh-card";
 
   try {
