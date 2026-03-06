@@ -21,6 +21,7 @@ type EphemeralWalletDerivationStrategy = (...args: unknown[]) => unknown;
 
 type EphemeralSignerProvider = {
   deriveWallet: EphemeralWalletDerivationStrategy;
+  getDBPath: (id: string, chainId: bigint) => string[];
 };
 
 type RailgunWalletWithEphemeralSignerProvider = {
@@ -107,7 +108,7 @@ const applyScopedDerivationStrategy = (
     return;
   }
 
-  const railgunWallet = fullWalletForID(walletID) as RailgunWalletWithEphemeralSignerProvider;
+  const railgunWallet = fullWalletForID(walletID);
   if (isDefined(railgunWallet.setEphemeralWalletDerivationStrategy)) {
     railgunWallet.setEphemeralWalletDerivationStrategy(strategy);
     return;

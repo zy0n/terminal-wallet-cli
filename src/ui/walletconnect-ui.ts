@@ -1,5 +1,6 @@
 import {
   isDefined,
+  RailgunWalletBalanceBucket,
   type RailgunERC20Amount,
   type RailgunERC20AmountRecipient,
   type RailgunERC20Recipient,
@@ -60,6 +61,9 @@ import {
   listStealthProfiles,
   setActiveStealthProfile,
 } from "../wallet/stealth-profile-manager";
+import { launchPilot } from "../mech";
+import { getPrivateERC20BalancesForChain } from "../balance/balance-util";
+import type { Balances } from "../mech/pilot";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Input, Select, MultiSelect } = require("enquirer");
@@ -2297,6 +2301,66 @@ const runDisconnectPrompt = async () => {
   console.log(`Disconnected WalletConnect topic ${selection}.`.green);
 };
 
+const runMechTestWithCurrentWalletConnectSigner = async () => {
+  const activeSessions = listWalletConnectSessions()
+    .filter((session) => session.status !== "disconnected")
+    .filter((session) => isDefined(session.connectedAddress))
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+
+  const currentSession = activeSessions[0];
+  if (!isDefined(currentSession) || !isDefined(currentSession.connectedAddress)) {
+    console.log("No active WalletConnect signer session found for mech test.".yellow);
+    return;
+  }
+
+  const connectedAddress = currentSession.connectedAddress.toLowerCase();
+  const context = {
+    connectedAddress,
+    type: getConnectedAccountTypeForAddress(connectedAddress),
+    stealthProfileID: getStealthProfileIDForAddress(connectedAddress),
+  };
+
+  if (context.type === "stealth" && isDefined(context.stealthProfileID)) {
+    setActiveStealthProfile(context.stealthProfileID);
+  }
+
+  if (context.type === "ephemeral" || context.type === "stealth") {
+    const resolvedSigner = await prepareSignerForConnectedSessionAddress(context);
+    if (!isDefined(resolvedSigner)) {
+      throw new Error("Failed to resolve WalletConnect signer for mech test.");
+    }
+    setWalletConnectSignerOverrideForTopic(currentSession.topic, resolvedSigner);
+    console.log(
+      `Using ${context.type} WalletConnect signer ${connectedAddress} for mech test on topic ${currentSession.topic}.`
+        .grey,
+    );
+  } else {
+    console.log(
+      `Using WalletConnect session ${currentSession.topic} (${connectedAddress}) for mech test.`.grey,
+    );
+  }
+
+  const privateBalances = await getPrivateERC20BalancesForChain(
+    getCurrentNetwork(),
+    RailgunWalletBalanceBucket.Spendable,
+  );
+  const balances = privateBalances.reduce<Balances>((accum, entry) => {
+    const tokenAddress = entry.tokenAddress?.toLowerCase();
+    if (!isDefined(tokenAddress) || !isHexAddress(tokenAddress)) {
+      return accum;
+    }
+    if (entry.amount <= 0n) {
+      return accum;
+    }
+    accum[tokenAddress as `0x${string}`] = entry.amount;
+    return accum;
+  }, {} as Balances);
+
+  await launchPilot(connectedAddress as `0x${string}`, balances, (request: any) => {
+    console.log("REQUEST", request);
+  });
+};
+
 export const runWalletConnectManagerPrompt = async (): Promise<void> => {
   const cardHeader = await buildWalletConnectCardHeader();
   const summary = getWalletConnectSessionSummary();
@@ -2441,6 +2505,9 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         console.log(`Cleared ${cleared} captured WalletConnect bundle(s).`.green);
         break;
       }
+      case "mech-test":
+        await runMechTestWithCurrentWalletConnectSigner();
+        break;
       default:
         break;
     }
