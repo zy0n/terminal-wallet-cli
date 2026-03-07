@@ -21,6 +21,7 @@ import { runTransactionBuilder } from "../transaction/transaction-builder";
 import { getCurrentNetwork } from "../engine/engine";
 import {
   getCurrentRailgunAddress,
+  getCurrentRailgunID,
   getGasBalanceForAddress,
   getCurrentWalletPublicAddress,
 } from "../wallet/wallet-util";
@@ -43,9 +44,10 @@ import {
   confirmPromptCatch,
   confirmPromptCatchRetry,
 } from "./confirm-ui";
-import { getWrappedTokenInfoForChain } from "../network/network-util";
+import { getChainForName, getWrappedTokenInfoForChain } from "../network/network-util";
 import { getERC20Balance } from "../balance/token-util";
 import { formatUnits } from "ethers";
+import { stealthSignerProvider } from "../wallet/ephemeral-signer-provider";
 
 const { Select, Input } = require("enquirer");
 
@@ -1258,6 +1260,7 @@ const runInternalStealthToolsPrompt = async (): Promise<void> => {
       { name: "sync-current", message: "Sync Current Internal Stealth Account" },
       { name: "manual-ratchet", message: "Ratchet to Next Internal Stealth Slot" },
       { name: "set-index", message: "Set Specific Internal Stealth Slot" },
+      { name: "show-signer-scope", message: "Show Active Signer Scope Details" },
       { name: "show-known", message: "Show Known Internal Stealth Slots" },
       { name: "lookup-index", message: "Lookup Internal Slot by Address" },
       { name: "manage-scopes", message: "Manage Internal Scopes & Policies" },
@@ -1376,6 +1379,33 @@ const runInternalStealthToolsPrompt = async (): Promise<void> => {
         );
       }
 
+      await confirmPromptCatchRetry("");
+      return runInternalStealthToolsPrompt();
+    }
+    case "show-signer-scope": {
+      const state = getCurrentKnownEphemeralState();
+      const networkName = getCurrentNetwork();
+      const chain = getChainForName(networkName);
+      const chainId = BigInt(chain.id);
+      const currentScope = stealthSignerProvider.getCurrentScope();
+      const currentIndex = state?.currentIndex ?? 0;
+      const walletID = getCurrentRailgunID() ?? "unknown-wallet";
+      const dbPathPreview = stealthSignerProvider.getDBPath(walletID, chainId).join("/");
+      const derivationPathPreview = stealthSignerProvider.getDerivationPath(
+        chainId,
+        currentIndex,
+      );
+
+      console.log(
+        [
+          `Network: ${networkName}`,
+          `Chain ID: ${chain.id}`,
+          `Active Scope: ${currentScope}`,
+          `Current Slot: ${currentIndex}`,
+          `Signer DB Path: ${dbPathPreview}`,
+          `Derivation Path: ${derivationPathPreview}`,
+        ].join("\n").grey,
+      );
       await confirmPromptCatchRetry("");
       return runInternalStealthToolsPrompt();
     }
