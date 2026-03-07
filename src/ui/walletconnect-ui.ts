@@ -25,6 +25,7 @@ import {
   rejectWalletConnectSessionProposal,
 } from "../walletconnect/walletconnect-bridge";
 import { confirmPrompt, confirmPromptCatch, confirmPromptCatchRetry } from "./confirm-ui";
+import { createLiveSelect } from "./live-select";
 import {
   getCurrentWalletPublicAddress,
   getCurrentRailgunAddress,
@@ -493,6 +494,69 @@ const buildWalletConnectCardHeader = async () => {
 
   cardRows.push(`${"└─".grey}`);
   return cardRows.join("\n");
+};
+
+const buildWalletConnectManagerChoices = () => {
+  const summary = getWalletConnectSessionSummary();
+  const choices: any[] = [];
+
+  if (summary.pendingRequests > 0) {
+    choices.push({
+      name: "approve-request",
+      message: `Approve next request (${summary.pendingRequests})`.cyan,
+    });
+  } else if (summary.pendingProposals > 0) {
+    choices.push({
+      name: "approve",
+      message: `Approve next proposal (${summary.pendingProposals})`.cyan,
+    });
+  } else if (summary.capturedBundles > 0) {
+    choices.push({
+      name: "build-7702",
+      message: `Build 7702 transaction (${summary.capturedBundles} bundles)`.magenta,
+    });
+  } else if (summary.paired === 0) {
+    choices.push({
+      name: "pair",
+      message: "Pair new WalletConnect URI".green,
+    });
+  }
+
+  choices.push(
+    {
+      message: ` >> ${"WalletConnect".grey.bold} <<`,
+      role: "separator",
+    },
+    {
+      name: "sessions-menu",
+      message: `Sessions${summary.paired ? ` (${summary.paired} paired)` : ""}`,
+    },
+  );
+
+  if (summary.pendingProposals > 0 || summary.pendingRequests > 0) {
+    choices.push({
+      name: "pending-menu",
+      message: `Pending approvals (${summary.pendingRequests + summary.pendingProposals})`,
+    });
+  }
+
+  if (summary.capturedBundles > 0) {
+    choices.push({
+      name: "bundles-menu",
+      message: `Bundles & 7702 (${summary.capturedBundles})`,
+    });
+  }
+
+  choices.push(
+    {
+      message: ` >> ${"Advanced".grey.bold} <<`,
+      role: "separator",
+    },
+    { name: "mech-test", message: "Test 7702 mech pilot".cyan },
+    { name: "exit-menu", message: "Go Back".grey },
+  );
+
+  return choices;
 };
 
 const printPendingWalletConnectProposals = async () => {
@@ -1569,6 +1633,13 @@ const printCapturedWalletConnectBundles = () => {
   });
 };
 
+const formatCompactTimestamp = (timestamp: number): string => {
+  return new Date(timestamp)
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d{3}Z$/, "Z");
+};
+
 const buildComposedCapturedBundles = (
   bundles: ReturnType<typeof listWalletConnectCapturedBundles>,
 ) => {
@@ -1632,11 +1703,11 @@ const selectCapturedBundle = async (): Promise<
       ...composedBundles.map((bundle) => ({
         name: bundle.key,
         message:
-          `[composed] ${bundle.calls.length} call(s) from topic ${bundle.topic.slice(0, 16)}...` ,
+          `[${formatCompactTimestamp(bundle.createdAt)}] [composed] ${bundle.calls.length} call(s) · ${bundle.topic.slice(0, 16)}...` ,
       })),
       ...bundles.map((bundle) => ({
         name: bundle.key,
-        message: `#${bundle.requestId} ${bundle.method} · ${bundle.calls.length} call(s) · ${bundle.topic.slice(0, 16)}...`,
+        message: `[${formatCompactTimestamp(bundle.createdAt)}] #${bundle.requestId} ${bundle.method} · ${bundle.calls.length} call(s) · ${bundle.topic.slice(0, 16)}...`,
       })),
       { name: "exit-menu", message: "Go Back".grey },
     ],
@@ -2294,93 +2365,12 @@ const runMechTestWithCurrentWalletConnectSigner = async () => {
 };
 
 export const runWalletConnectManagerPrompt = async (): Promise<void> => {
-  const cardHeader = await buildWalletConnectCardHeader();
-  const summary = getWalletConnectSessionSummary();
-
-  const prompt = new Select({
-    header: cardHeader,
+  const prompt = createLiveSelect({
+    header: buildWalletConnectCardHeader,
     message: "WalletConnect Command Palette",
-    choices: [
-      {
-        name: "section-session",
-        message: "─ Sessions ─".dim,
-        disabled: true,
-      },
-      {
-        name: "pair",
-        message: "Pair new WalletConnect URI".green,
-      },
-      {
-        name: "disconnect",
-        message: `Disconnect paired session (${summary.paired})`,
-        disabled: summary.paired === 0 ? "No paired sessions" : false,
-      },
-      {
-        name: "list-active",
-        message: `View paired sessions (${summary.paired})`,
-        disabled: summary.paired === 0 ? "No paired sessions" : false,
-      },
-      {
-        name: "list",
-        message: `View all sessions (${summary.total})`,
-      },
-      {
-        name: "section-pending",
-        message: "─ Pending approvals ─".dim,
-        disabled: true,
-      },
-      {
-        name: "approve",
-        message: `Approve session proposal (${summary.pendingProposals})`,
-        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
-      },
-      {
-        name: "approve-request",
-        message: `Approve session request (${summary.pendingRequests})`,
-        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
-      },
-      {
-        name: "reject",
-        message: `Reject session proposal (${summary.pendingProposals})`,
-        disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
-      },
-      {
-        name: "reject-request",
-        message: `Reject session request (${summary.pendingRequests})`,
-        disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
-      },
-      {
-        name: "pending",
-        message: `View pending proposals (${summary.pendingProposals})`,
-      },
-      {
-        name: "pending-requests",
-        message: `View pending requests (${summary.pendingRequests})`,
-      },
-      {
-        name: "section-bundles",
-        message: "─ Bundles & 7702 ─".dim,
-        disabled: true,
-      },
-      {
-        name: "bundles",
-        message: `View captured bundles (${summary.capturedBundles})`,
-      },
-      {
-        name: "build-7702",
-        message: `Build 7702 transaction from bundle (${summary.capturedBundles})`,
-        disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
-      },
-      {
-        name: "clear-bundles",
-        message: "Clear captured bundles",
-        disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
-      },
-      { name: "mech-test", message: "Test 7702 mech pilot".cyan },
-      { name: "refresh-card", message: "Refresh overview".cyan },
-      { name: "exit-menu", message: "Go Back".grey },
-    ],
+    choices: buildWalletConnectManagerChoices,
     multiple: false,
+    refreshIntervalMs: 1000,
   });
 
   const selection = await prompt.run().catch(confirmPromptCatch);
@@ -2388,7 +2378,7 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
     return;
   }
   // await launchPilotUI(mechAddress, balances);
-  const shouldPauseForContinue = selection !== "refresh-card";
+  const shouldPauseForContinue = true;
 
   try {
     await initializeWalletConnectKit();
@@ -2397,8 +2387,136 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
       case "pair":
         await runPairPrompt();
         break;
-      case "refresh-card":
+      case "sessions-menu": {
+        const cardHeader = await buildWalletConnectCardHeader();
+        const summary = getWalletConnectSessionSummary();
+        const sessionChoices: any[] = [
+          { name: "pair", message: "Pair new WalletConnect URI".green },
+        ];
+        if (summary.paired > 0) {
+          sessionChoices.push(
+            { name: "list-active", message: `View paired sessions (${summary.paired})` },
+            { name: "disconnect", message: `Disconnect paired session (${summary.paired})` },
+          );
+        }
+        if (summary.total > 0) {
+          sessionChoices.push({ name: "list", message: `View all sessions (${summary.total})` });
+        }
+        sessionChoices.push({ name: "exit-menu", message: "Go Back".grey });
+        const sessionSelection = await new Select({
+          header: cardHeader,
+          message: "WalletConnect Sessions",
+          choices: sessionChoices,
+          multiple: false,
+        }).run().catch(confirmPromptCatch);
+        if (!sessionSelection || sessionSelection === "exit-menu") {
+          break;
+        }
+        switch (sessionSelection) {
+          case "pair":
+            await runPairPrompt();
+            break;
+          case "disconnect":
+            await runDisconnectPrompt();
+            break;
+          case "list-active":
+            printWalletConnectPairedSessions();
+            break;
+          case "list":
+            printWalletConnectSessions();
+            break;
+          default:
+            break;
+        }
         break;
+      }
+      case "pending-menu": {
+        const cardHeader = await buildWalletConnectCardHeader();
+        const summary = getWalletConnectSessionSummary();
+        const pendingChoices: any[] = [];
+        if (summary.pendingRequests > 0) {
+          pendingChoices.push(
+            { name: "approve-request", message: `Approve request (${summary.pendingRequests})`.cyan },
+            { name: "reject-request", message: `Reject request (${summary.pendingRequests})` },
+            { name: "pending-requests", message: `View pending requests (${summary.pendingRequests})` },
+          );
+        }
+        if (summary.pendingProposals > 0) {
+          pendingChoices.push(
+            { name: "approve", message: `Approve proposal (${summary.pendingProposals})`.cyan },
+            { name: "reject", message: `Reject proposal (${summary.pendingProposals})` },
+            { name: "pending", message: `View pending proposals (${summary.pendingProposals})` },
+          );
+        }
+        pendingChoices.push({ name: "exit-menu", message: "Go Back".grey });
+        const pendingSelection = await new Select({
+          header: cardHeader,
+          message: "Pending WalletConnect Approvals",
+          choices: pendingChoices,
+          multiple: false,
+        }).run().catch(confirmPromptCatch);
+        if (!pendingSelection || pendingSelection === "exit-menu") {
+          break;
+        }
+        switch (pendingSelection) {
+          case "approve":
+            await runApprovePrompt();
+            break;
+          case "approve-request":
+            await runApproveRequestPrompt();
+            break;
+          case "reject":
+            await runRejectPrompt();
+            break;
+          case "reject-request":
+            await runRejectRequestPrompt();
+            break;
+          case "pending":
+            await printPendingWalletConnectProposals();
+            break;
+          case "pending-requests":
+            await printPendingWalletConnectRequests();
+            break;
+          default:
+            break;
+        }
+        break;
+      }
+      case "bundles-menu": {
+        const cardHeader = await buildWalletConnectCardHeader();
+        const summary = getWalletConnectSessionSummary();
+        const bundleChoices: any[] = [
+          { name: "bundles", message: `View captured bundles (${summary.capturedBundles})` },
+          { name: "build-7702", message: `Build 7702 transaction (${summary.capturedBundles})`.magenta },
+          { name: "clear-bundles", message: "Clear captured bundles" },
+          { name: "exit-menu", message: "Go Back".grey },
+        ];
+        const bundleSelection = await new Select({
+          header: cardHeader,
+          message: "Bundles & 7702",
+          choices: bundleChoices,
+          multiple: false,
+        }).run().catch(confirmPromptCatch);
+        if (!bundleSelection || bundleSelection === "exit-menu") {
+          break;
+        }
+        switch (bundleSelection) {
+          case "bundles":
+            printCapturedWalletConnectBundles();
+            break;
+          case "build-7702":
+            await runBuildCrossContract7702FromBundlePrompt();
+            break;
+          case "clear-bundles": {
+            const cleared = clearWalletConnectCapturedBundles();
+            console.log(`Cleared ${cleared} captured WalletConnect bundle(s).`.green);
+            break;
+          }
+          default:
+            break;
+        }
+        break;
+      }
       case "list":
         printWalletConnectSessions();
         break;

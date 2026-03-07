@@ -68,4 +68,13 @@ class StealthSignerProvider implements EphemeralSignerProvider {
 
 export const stealthSignerProvider = new StealthSignerProvider();
 
+export const createScopedStealthSignerProvider = (
+    strategy: EphemeralWalletDerivationStrategy,
+    scopeID?: string,
+): EphemeralSignerProvider => {
+    const provider = new StealthSignerProvider();
+    provider.setCurrentScope(scopeID);
+    return provider.withDerivationStrategy(strategy);
+};
+
 export { StealthSignerProvider };

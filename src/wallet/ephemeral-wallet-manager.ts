@@ -20,6 +20,7 @@ import { walletManager } from "./wallet-manager";
 import { getCurrentNetwork } from "../engine/engine";
 import { getChainForName } from "../network/network-util";
 import { HDNodeWallet } from "ethers";
+import { createScopedStealthSignerProvider } from "./ephemeral-signer-provider";
 
 type RailgunWalletWithEphemeralSignerProvider = {
   setEphemeralSignerProvider?: (provider: EphemeralSignerProvider) => void;
@@ -106,16 +107,15 @@ const applyScopedDerivationStrategy = (
   }
 
   const railgunWallet = fullWalletForID(walletID);
+  if (isDefined(railgunWallet.setEphemeralSignerProvider)) {
+    railgunWallet.setEphemeralSignerProvider(
+      createScopedStealthSignerProvider(strategy, scopeID),
+    );
+  }
+
   if (isDefined(railgunWallet.setEphemeralWalletDerivationStrategy)) {
     railgunWallet.setEphemeralWalletDerivationStrategy(strategy);
     return;
-  }
-
-  if (isDefined(railgunWallet.setEphemeralSignerProvider)) {
-    railgunWallet.setEphemeralSignerProvider({
-      deriveWallet: strategy,
-      getDBPath: (id: string, chainId: bigint) => [id, chainId.toString(10)],
-    });
   }
 };
 

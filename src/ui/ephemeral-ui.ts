@@ -43,6 +43,7 @@ import {
   confirmPromptCatch,
   confirmPromptCatchRetry,
 } from "./confirm-ui";
+import { createLiveSelect } from "./live-select";
 import { getWrappedTokenInfoForChain } from "../network/network-util";
 import { getERC20Balance } from "../balance/token-util";
 import { formatUnits } from "ethers";
@@ -654,6 +655,219 @@ const buildStealthCardHeader = async () => {
   return rows.join("\n");
 };
 
+const buildExternalStealthProfileChoices = () => {
+  const summary = getStealthProfileSummary();
+  const activeProfile = getActiveStealthProfile();
+  const activeSignerScopeID = activeProfile?.signerStrategyScopeID;
+  const choices: any[] = [
+    {
+      name: "create-profile",
+      message: summary.total === 0 ? "Create your first profile".green : "Create profile",
+    },
+  ];
+
+  if (summary.total > 0) {
+    choices.push(
+      {
+        message: ` >> ${"Profiles".grey.bold} <<`,
+        role: "separator",
+      },
+      { name: "list-profiles", message: `View profiles (${summary.total})` },
+      { name: "edit-profile", message: "Edit profile" },
+      { name: "set-active", message: "Choose active profile" },
+      { name: "remove-profile", message: "Remove profile" },
+    );
+  }
+
+  if (summary.hasActiveLinkedAddress) {
+    choices.push(
+      {
+        message: ` >> ${"Active Profile Funds".grey.bold} <<`,
+        role: "separator",
+      },
+      { name: "funds-menu", message: `Manage funds for ${activeProfile?.name ?? "active profile"}` },
+    );
+  }
+
+  if (isDefined(activeSignerScopeID)) {
+    choices.push(
+      {
+        message: ` >> ${"Signer Tools".grey.bold} <<`,
+        role: "separator",
+      },
+      {
+        name: "activate-profile-signer",
+        message: `Activate signer strategy (${activeSignerScopeID})`,
+      },
+    );
+  }
+
+  choices.push({ name: "exit-menu", message: "Go Back".grey });
+  return choices;
+};
+
+const buildStealthManagerChoices = () => {
+  const summary = getStealthProfileSummary();
+  const activeProfile = getActiveStealthProfile();
+  const choices: any[] = [];
+
+  if (!summary.total) {
+    choices.push({ name: "quick-profiles", message: "Create your first stealth profile".green });
+  } else if (summary.hasActiveLinkedAddress) {
+    choices.push({
+      name: "quick-funds",
+      message: `Active profile funds${activeProfile ? ` (${activeProfile.name})` : ""}`.cyan,
+    });
+  } else if (!summary.activeProfileID) {
+    choices.push({ name: "quick-profiles", message: "Choose an active stealth profile".yellow });
+  } else {
+    choices.push({ name: "quick-profiles", message: "Link or generate address for active profile".yellow });
+  }
+
+  choices.push(
+    {
+      message: ` >> ${"Stealth Accounts".grey.bold} <<`,
+      role: "separator",
+    },
+    {
+      name: "external-profiles",
+      message: `Manage stealth profiles (${summary.total})`,
+    },
+  );
+
+  if (summary.hasActiveLinkedAddress) {
+    choices.push({
+      name: "funds-menu",
+      message: "Manage active profile funds",
+    });
+  }
+
+  choices.push(
+    {
+      message: ` >> ${"Internal Tools".grey.bold} <<`,
+      role: "separator",
+    },
+    {
+      name: "internal-tools",
+      message: "Manage internal slots, sync, and scopes",
+    },
+    { name: "exit-menu", message: "Go Back".grey },
+  );
+
+  return choices;
+};
+
+const buildInternalStealthToolsHeader = async () => {
+  const state = getCurrentKnownEphemeralState();
+  const internalPublicBalances = await formatPublicBalanceSummary(
+    state?.currentAddress,
+  );
+  const knownCount = getKnownEphemeralAddresses().length;
+  const scopeCount = listEphemeralSessionScopes().length;
+
+  return [
+    `${"┌─ Internal Stealth Tools".grey} ${"(Interactive Card)".dim}`,
+    `${"│".grey} current slot=${state?.currentIndex ?? "n/a"} · known addresses=${knownCount} · scopes=${scopeCount}`,
+    `${"│".grey} current address=${shortAddress(state?.currentAddress)}`,
+    `${"│".grey} public balances=${internalPublicBalances}`,
+    `${"│".grey} next best action=${(state?.currentAddress ? "Sync or ratchet current slot" : "Sync current slot first").cyan}`,
+    `${"└─".grey}`,
+  ].join("\n");
+};
+
+const buildInternalStealthToolChoices = () => {
+  const state = getCurrentKnownEphemeralState();
+  const knownCount = getKnownEphemeralAddresses().length;
+  const scopeCount = listEphemeralSessionScopes().length;
+
+  const choices: any[] = [
+    {
+      name: "sync-current",
+      message: state?.currentAddress
+        ? "Sync current internal stealth account".cyan
+        : "Sync current internal stealth account".green,
+    },
+    { name: "manual-ratchet", message: "Ratchet to next internal slot" },
+    { name: "set-index", message: "Set specific internal slot" },
+  ];
+
+  if (knownCount > 0) {
+    choices.push(
+      {
+        message: ` >> ${"Known Accounts".grey.bold} <<`,
+        role: "separator",
+      },
+      { name: "show-known", message: `View known internal slots (${knownCount})` },
+      { name: "lookup-index", message: "Find slot by address" },
+    );
+  }
+
+  choices.push(
+    {
+      message: ` >> ${"Scopes".grey.bold} <<`,
+      role: "separator",
+    },
+    { name: "manage-scopes", message: `Manage scopes & ratchet policy (${scopeCount})` },
+    { name: "exit-menu", message: "Go Back".grey },
+  );
+
+  return choices;
+};
+
+const buildInternalScopeManagerHeader = () => {
+  const scopes = listEphemeralSessionScopes();
+  const strategyScopes = listScopedEphemeralWalletDerivationStrategyScopeIDs();
+
+  return [
+    `${"┌─ Internal Scope Manager".grey} ${"(Interactive Card)".dim}`,
+    `${"│".grey} scopes=${scopes.length.toString().cyan} · signer strategies=${strategyScopes.length.toString().magenta}`,
+    `${"│".grey} ${scopes.length ? "most recent scopes:" : "no internal stealth scopes configured yet.".grey}`,
+    ...(scopes.slice(0, 3).map((scope) => {
+      const strategyStatus = hasScopedEphemeralWalletDerivationStrategy(scope.scopeID)
+        ? "strategy".green
+        : "no-strategy".yellow;
+      return `${"│".grey} • ${scope.scopeID.cyan} · idx=${scope.lastKnownIndex ?? "n/a"} · ${strategyStatus}`;
+    })),
+    `${"└─".grey}`,
+  ].join("\n");
+};
+
+const buildInternalScopeManagerChoices = () => {
+  const scopes = listEphemeralSessionScopes();
+  const strategyScopes = listScopedEphemeralWalletDerivationStrategyScopeIDs();
+  const choices: any[] = [
+    {
+      name: "upsert-policy",
+      message: scopes.length ? "Create or update scope ratchet policy" : "Create first scope policy".green,
+    },
+  ];
+
+  if (scopes.length > 0) {
+    choices.push(
+      {
+        message: ` >> ${"Scopes".grey.bold} <<`,
+        role: "separator",
+      },
+      { name: "list", message: `View scopes (${scopes.length})` },
+      { name: "remove", message: "Remove scope" },
+    );
+  }
+
+  if (strategyScopes.length > 0) {
+    choices.push(
+      {
+        message: ` >> ${"Signer Strategies".grey.bold} <<`,
+        role: "separator",
+      },
+      { name: "activate-signer", message: "Activate scope signer strategy" },
+      { name: "show-strategy-scopes", message: `View scopes with signer strategies (${strategyScopes.length})` },
+    );
+  }
+
+  choices.push({ name: "exit-menu", message: "Go Back".grey });
+  return choices;
+};
+
 const selectStealthProfileID = async (
   message: string,
 ): Promise<Optional<string>> => {
@@ -847,104 +1061,12 @@ const promptStealthProfileInput = async (
 };
 
 const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
-  const summary = getStealthProfileSummary();
-  const prompt = new Select({
-    header: await buildStealthCardHeader(),
+  const prompt = createLiveSelect({
+    header: buildStealthCardHeader,
     message: "External Stealth Profiles",
-    choices: [
-      {
-        name: "section-profiles",
-        message: "─ Profiles ─".dim,
-        disabled: true,
-      },
-      {
-        name: "list-profiles",
-        message: `View profiles (${summary.total})`,
-      },
-      {
-        name: "create-profile",
-        message: "Create profile",
-      },
-      {
-        name: "edit-profile",
-        message: "Edit profile",
-        disabled: summary.total === 0 ? "No profiles" : false,
-      },
-      {
-        name: "set-active",
-        message: "Choose active profile",
-        disabled: summary.total === 0 ? "No profiles" : false,
-      },
-      {
-        name: "remove-profile",
-        message: "Remove profile",
-        disabled: summary.total === 0 ? "No profiles" : false,
-      },
-      {
-        name: "section-funds",
-        message: "─ Active profile funds ─".dim,
-        disabled: true,
-      },
-      {
-        name: "fund-unshield-erc20",
-        message: "Fund active profile with private ERC20",
-        disabled:
-          summary.total === 0
-            ? "No profiles"
-            : !summary.hasActiveLinkedAddress
-            ? "Active profile needs a 0x address"
-            : false,
-      },
-      {
-        name: "fund-unshield-eth",
-        message: "Fund active profile with private ETH",
-        disabled:
-          summary.total === 0
-            ? "No profiles"
-            : !summary.hasActiveLinkedAddress
-            ? "Active profile needs a 0x address"
-            : false,
-      },
-      {
-        name: "withdraw-reshield-erc20",
-        message: "Withdraw ERC20 from active profile to private balance",
-        disabled:
-          summary.total === 0
-            ? "No profiles"
-            : !summary.hasActiveLinkedAddress
-            ? "Active profile needs a 0x address"
-            : false,
-      },
-      {
-        name: "withdraw-reshield-eth",
-        message: "Withdraw ETH from active profile to private balance",
-        disabled:
-          summary.total === 0
-            ? "No profiles"
-            : !summary.hasActiveLinkedAddress
-            ? "Active profile needs a 0x address"
-            : false,
-      },
-      {
-        name: "section-tools",
-        message: "─ Signer tools ─".dim,
-        disabled: true,
-      },
-      {
-        name: "activate-profile-signer",
-        message: "Activate signer strategy for active profile",
-        disabled:
-          !summary.activeProfileID || !summary.withSignerScope
-            ? "No active signer-bound profile"
-            : false,
-      },
-      {
-        name: "refresh-card",
-        message: "Refresh overview".cyan,
-      },
-      { name: "exit-menu", message: "Go Back".grey },
-    ],
+    choices: buildExternalStealthProfileChoices,
     multiple: false,
+    refreshIntervalMs: 1200,
   });
 
   const selection = await prompt.run().catch(confirmPromptCatch);
@@ -1006,6 +1128,41 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       const active = setActiveStealthProfile(profileID);
       console.log(`Active profile set to ${active.name} (${active.id}).`.green);
       await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "funds-menu": {
+      const fundChoices: any[] = [
+        { name: "fund-unshield-erc20", message: "Fund with private ERC20" },
+        { name: "fund-unshield-eth", message: "Fund with private ETH" },
+        { name: "withdraw-reshield-erc20", message: "Withdraw ERC20 to private balance" },
+        { name: "withdraw-reshield-eth", message: "Withdraw ETH to private balance" },
+        { name: "exit-menu", message: "Go Back".grey },
+      ];
+      const fundSelection = await new Select({
+        header: await buildStealthCardHeader(),
+        message: "Active Profile Funds",
+        choices: fundChoices,
+        multiple: false,
+      }).run().catch(confirmPromptCatch);
+      if (!fundSelection || fundSelection === "exit-menu") {
+        return runExternalStealthProfileManagerPrompt();
+      }
+      switch (fundSelection) {
+        case "fund-unshield-erc20":
+          await runFundUnshieldERC20ForActiveProfile();
+          break;
+        case "fund-unshield-eth":
+          await runFundUnshieldETHForActiveProfile();
+          break;
+        case "withdraw-reshield-erc20":
+          await runWithdrawReshieldERC20FromProfile();
+          break;
+        case "withdraw-reshield-eth":
+          await runWithdrawReshieldETHFromProfile();
+          break;
+        default:
+          break;
+      }
       return runExternalStealthProfileManagerPrompt();
     }
     case "fund-unshield-erc20": {
@@ -1084,9 +1241,6 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
           .green,
       );
       await confirmPromptCatchRetry("");
-      return runExternalStealthProfileManagerPrompt();
-    }
-    case "refresh-card": {
       return runExternalStealthProfileManagerPrompt();
     }
     default: {
@@ -1173,18 +1327,12 @@ const promptAndApplyScopePolicy = async () => {
 };
 
 const runInternalScopeManagerPrompt = async (): Promise<void> => {
-  const prompt = new Select({
-    header: ["Internal Railgun Scope Manager", formatKnownScopes()].join("\n\n"),
+  const prompt = createLiveSelect({
+    header: buildInternalScopeManagerHeader,
     message: "Internal Scope Tools",
-    choices: [
-      { name: "list", message: "List Scopes" },
-      { name: "upsert-policy", message: "Create/Update Scope Ratchet Policy" },
-      { name: "remove", message: "Remove Scope" },
-      { name: "activate-signer", message: "Activate Scope Signer Strategy" },
-      { name: "show-strategy-scopes", message: "Show Scopes with Signer Strategies" },
-      { name: "exit-menu", message: "Go Back".grey },
-    ],
+    choices: buildInternalScopeManagerChoices,
     multiple: false,
+    refreshIntervalMs: 1200,
   });
 
   const selection = await prompt.run().catch(confirmPromptCatch);
@@ -1267,28 +1415,12 @@ const runInternalScopeManagerPrompt = async (): Promise<void> => {
 };
 
 const runInternalStealthToolsPrompt = async (): Promise<void> => {
-  const state = getCurrentKnownEphemeralState();
-  const internalPublicBalances = await formatPublicBalanceSummary(
-    state?.currentAddress,
-  );
-  const prompt = new Select({
-    header: [
-      "Internal Railgun Stealth Tools",
-      `Current Slot: ${state?.currentIndex ?? "n/a"}`,
-      `Current Address: ${state?.currentAddress ?? "unknown"}`,
-      `Current Public Balances: ${internalPublicBalances}`,
-    ].join("\n"),
+  const prompt = createLiveSelect({
+    header: buildInternalStealthToolsHeader,
     message: "Internal Stealth Tools",
-    choices: [
-      { name: "sync-current", message: "Sync Current Internal Stealth Account" },
-      { name: "manual-ratchet", message: "Ratchet to Next Internal Stealth Slot" },
-      { name: "set-index", message: "Set Specific Internal Stealth Slot" },
-      { name: "show-known", message: "Show Known Internal Stealth Slots" },
-      { name: "lookup-index", message: "Lookup Internal Slot by Address" },
-      { name: "manage-scopes", message: "Manage Internal Scopes & Policies" },
-      { name: "exit-menu", message: "Go Back".grey },
-    ],
+    choices: buildInternalStealthToolChoices,
     multiple: false,
+    refreshIntervalMs: 1200,
   });
 
   const selection = await prompt.run().catch(confirmPromptCatch);
@@ -1424,36 +1556,12 @@ const runInternalStealthToolsPrompt = async (): Promise<void> => {
 };
 
 export const runEphemeralManagerPrompt = async (): Promise<void> => {
-  const summary = getStealthProfileSummary();
-  const prompt = new Select({
-    header: await buildStealthCardHeader(),
+  const prompt = createLiveSelect({
+    header: buildStealthCardHeader,
     message: "Stealth Account Tools",
-    choices: [
-      {
-        name: "section-external",
-        message: "─ Profile management ─".dim,
-        disabled: true,
-      },
-      {
-        name: "external-profiles",
-        message: `Manage stealth profiles (${summary.total})`,
-      },
-      {
-        name: "section-internal",
-        message: "─ Internal signer tools ─".dim,
-        disabled: true,
-      },
-      {
-        name: "internal-tools",
-        message: "Manage internal slots, sync, and scopes",
-      },
-      {
-        name: "refresh-card",
-        message: "Refresh overview".cyan,
-      },
-      { name: "exit-menu", message: "Go Back".grey },
-    ],
+    choices: buildStealthManagerChoices,
     multiple: false,
+    refreshIntervalMs: 1200,
   });
 
   const selection = await prompt.run().catch(confirmPromptCatch);
@@ -1466,11 +1574,20 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
       await runExternalStealthProfileManagerPrompt();
       return runEphemeralManagerPrompt();
     }
-    case "internal-tools": {
-      await runInternalStealthToolsPrompt();
+    case "quick-profiles": {
+      await runExternalStealthProfileManagerPrompt();
       return runEphemeralManagerPrompt();
     }
-    case "refresh-card": {
+    case "funds-menu": {
+      await runExternalStealthProfileManagerPrompt();
+      return runEphemeralManagerPrompt();
+    }
+    case "quick-funds": {
+      await runExternalStealthProfileManagerPrompt();
+      return runEphemeralManagerPrompt();
+    }
+    case "internal-tools": {
+      await runInternalStealthToolsPrompt();
       return runEphemeralManagerPrompt();
     }
     default: {
