@@ -601,25 +601,35 @@ export const runStealthProfileWithdrawReshieldPrompt = async (): Promise<void> =
 const buildStealthCardHeader = async () => {
   const summary = getStealthProfileSummary();
   const internalState = getCurrentKnownEphemeralState();
-  const profiles = listStealthProfiles().slice(0, 3);
+  const allProfiles = listStealthProfiles();
+  const profiles = allProfiles.slice(0, 3);
+  const activeProfile = allProfiles.find((profile) => profile.id === summary.activeProfileID);
   const [activePublicBalances, internalPublicBalances] = await Promise.all([
     formatPublicBalanceSummary(summary.activeAccountAddress),
     formatPublicBalanceSummary(internalState?.currentAddress),
   ]);
+  const suggestedAction = !summary.total
+    ? "Create your first profile".green
+    : !summary.activeProfileID
+      ? "Choose an active profile".yellow
+      : !summary.hasActiveLinkedAddress
+        ? "Link or generate a 0x address".yellow
+        : "Fund or withdraw active profile".cyan;
 
   const rows = [
     `${"┌─ Stealth Account Manager".grey} ${"(Interactive Card)".dim}`,
-    `${"│".grey} external-profiles=${summary.total.toString().cyan} active=${
-      summary.activeProfileID ? "yes".green : "no".yellow
-    } with-address=${summary.linked.toString().green} scoped=${summary.scoped.toString().grey} slotted=${summary.slotted
+    `${"│".grey} profiles=${summary.total.toString().cyan} · ${summary.linked
       .toString()
-      .grey}`,
-    `${"│".grey} active-account=${shortAddress(summary.activeAccountAddress)}`,
-    `${"│".grey} active-public-balances=${activePublicBalances}`,
-    `${"│".grey} internal-railgun-slot=${internalState?.currentIndex ?? "n/a"} internal-address=${shortAddress(
+      .green} linked · ${summary.scoped.toString().grey} scoped · ${summary.withSignerScope
+      .toString()
+      .magenta} signer-bound`,
+    `${"│".grey} active profile=${activeProfile?.name ?? "none"} · account=${shortAddress(summary.activeAccountAddress)}`,
+    `${"│".grey} active public balances=${activePublicBalances}`,
+    `${"│".grey} internal slot=${internalState?.currentIndex ?? "n/a"} · address=${shortAddress(
       internalState?.currentAddress,
     )}`,
-    `${"│".grey} internal-public-balances=${internalPublicBalances}`,
+    `${"│".grey} internal public balances=${internalPublicBalances}`,
+    `${"│".grey} next best action=${suggestedAction}`,
   ];
 
   if (!profiles.length) {
@@ -843,26 +853,41 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
     message: "External Stealth Profiles",
     choices: [
       {
+        name: "section-profiles",
+        message: "─ Profiles ─".dim,
+        disabled: true,
+      },
+      {
         name: "list-profiles",
-        message: `List Profiles (${summary.total})`,
+        message: `View profiles (${summary.total})`,
       },
       {
         name: "create-profile",
-        message: "Create Profile",
+        message: "Create profile",
       },
       {
         name: "edit-profile",
-        message: "Edit Profile",
+        message: "Edit profile",
         disabled: summary.total === 0 ? "No profiles" : false,
       },
       {
         name: "set-active",
-        message: "Set Active Profile",
+        message: "Choose active profile",
         disabled: summary.total === 0 ? "No profiles" : false,
       },
       {
+        name: "remove-profile",
+        message: "Remove profile",
+        disabled: summary.total === 0 ? "No profiles" : false,
+      },
+      {
+        name: "section-funds",
+        message: "─ Active profile funds ─".dim,
+        disabled: true,
+      },
+      {
         name: "fund-unshield-erc20",
-        message: "Fund Active Profile (Unshield ERC20)",
+        message: "Fund active profile with private ERC20",
         disabled:
           summary.total === 0
             ? "No profiles"
@@ -872,7 +897,7 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       },
       {
         name: "fund-unshield-eth",
-        message: "Fund Active Profile (Unshield ETH)",
+        message: "Fund active profile with private ETH",
         disabled:
           summary.total === 0
             ? "No profiles"
@@ -882,7 +907,7 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       },
       {
         name: "withdraw-reshield-erc20",
-        message: "Withdraw Active Profile (Reshield ERC20)",
+        message: "Withdraw ERC20 from active profile to private balance",
         disabled:
           summary.total === 0
             ? "No profiles"
@@ -892,7 +917,7 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       },
       {
         name: "withdraw-reshield-eth",
-        message: "Withdraw Active Profile (Reshield ETH)",
+        message: "Withdraw ETH from active profile to private balance",
         disabled:
           summary.total === 0
             ? "No profiles"
@@ -901,13 +926,13 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
             : false,
       },
       {
-        name: "remove-profile",
-        message: "Remove Profile",
-        disabled: summary.total === 0 ? "No profiles" : false,
+        name: "section-tools",
+        message: "─ Signer tools ─".dim,
+        disabled: true,
       },
       {
         name: "activate-profile-signer",
-        message: "Activate Active Profile Signer Strategy",
+        message: "Activate signer strategy for active profile",
         disabled:
           !summary.activeProfileID || !summary.withSignerScope
             ? "No active signer-bound profile"
@@ -915,7 +940,7 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       },
       {
         name: "refresh-card",
-        message: "Refresh Card".cyan,
+        message: "Refresh overview".cyan,
       },
       { name: "exit-menu", message: "Go Back".grey },
     ],
@@ -1401,20 +1426,30 @@ const runInternalStealthToolsPrompt = async (): Promise<void> => {
 export const runEphemeralManagerPrompt = async (): Promise<void> => {
   const summary = getStealthProfileSummary();
   const prompt = new Select({
-    header: buildStealthCardHeader(),
+    header: await buildStealthCardHeader(),
     message: "Stealth Account Tools",
     choices: [
       {
+        name: "section-external",
+        message: "─ Profile management ─".dim,
+        disabled: true,
+      },
+      {
         name: "external-profiles",
-        message: `Manage External Stealth Profiles (${summary.total})`,
+        message: `Manage stealth profiles (${summary.total})`,
+      },
+      {
+        name: "section-internal",
+        message: "─ Internal signer tools ─".dim,
+        disabled: true,
       },
       {
         name: "internal-tools",
-        message: "Internal Railgun Stealth Tools",
+        message: "Manage internal slots, sync, and scopes",
       },
       {
         name: "refresh-card",
-        message: "Refresh Card".cyan,
+        message: "Refresh overview".cyan,
       },
       { name: "exit-menu", message: "Go Back".grey },
     ],

@@ -446,41 +446,47 @@ const buildWalletConnectCardHeader = async () => {
     .slice(0, 4);
   const pendingCount = summary.pendingProposals;
   const pendingRequestCount = summary.pendingRequests;
+  const activeAccount = summary.activeConnectedAddress ?? summary.latestConnectedAddress;
+  const activeAccountType = isDefined(activeAccount)
+    ? getConnectedAccountTypeForAddress(activeAccount)
+    : "other";
+  const suggestedAction = summary.pendingRequests > 0
+    ? "Approve pending request".cyan
+    : summary.pendingProposals > 0
+      ? "Approve pending proposal".cyan
+      : summary.capturedBundles > 0
+        ? "Build 7702 transaction".magenta
+        : summary.paired > 0
+          ? "Review paired sessions".yellow
+          : "Pair a WalletConnect URI".green;
 
   const cardRows = [
     `${"┌─ WalletConnect Console".grey} ${"(Interactive Card)".dim}`,
-    `${"│".grey} paired=${summary.paired.toString().green} disconnected=${summary.disconnected
+    `${"│".grey} sessions=${summary.paired.toString().green} paired · ${summary.disconnected
       .toString()
-      .grey} scoped=${summary.scoped.toString().cyan} proposals=${pendingCount
+      .grey} disconnected · ${summary.scoped.toString().cyan} scoped`,
+    `${"│".grey} pending=${pendingRequestCount.toString().yellow} requests · ${pendingCount
       .toString()
-      .yellow} requests=${pendingRequestCount
-      .toString()
-      .yellow}`,
-    `${"│".grey} captured-bundles=${summary.capturedBundles.toString().magenta}`,
-    `${"│".grey} active-account=${shortAddress(summary.activeConnectedAddress ?? summary.latestConnectedAddress)}`,
-    `${"│".grey} acct: public | ephemeral | stealth | other`,
-    `${"│".grey} quick-actions: ${
-      summary.pendingRequests > 0
-        ? "approve-request".cyan
-        : summary.pendingProposals > 0
-          ? "approve-proposal".cyan
-          : summary.paired > 0
-            ? "disconnect".yellow
-            : "pair".green
-    }`,
+      .yellow} proposals · ${summary.capturedBundles.toString().magenta} bundles`,
+    `${"│".grey} active account=${shortAddress(activeAccount)} (${activeAccountType.cyan})`,
+    `${"│".grey} next best action=${suggestedAction}`,
   ];
 
   if (!pairedSessions.length) {
-    cardRows.push(`${"│".grey} active sessions: none`);
+    cardRows.push(`${"│".grey} paired sessions: none`);
   } else {
-    cardRows.push(`${"│".grey} active sessions:`);
+    cardRows.push(`${"│".grey} paired sessions:`);
     pairedSessions.forEach((session) => {
-      const statusColor = session.status === "paired" ? "green" : "grey";
       const accountType = getConnectedAccountTypeForAddress(session.connectedAddress);
       cardRows.push(
-        `${"│".grey} - ${session.topic.slice(0, 16)}... ${
-          session.status[statusColor]
-        } ${`acct=${accountType}`.cyan} ${session.scopeID ? `scope=${session.scopeID}` : ""}`.trimEnd(),
+        [
+          `${"│".grey} • ${session.topic.slice(0, 12)}...`,
+          shortAddress(session.connectedAddress),
+          `${accountType}`.cyan,
+          session.scopeID ? `scope=${session.scopeID}` : undefined,
+        ]
+          .filter((part) => isDefined(part) && `${part}`.length > 0)
+          .join(" · "),
       );
     });
   }
@@ -2297,81 +2303,81 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
     choices: [
       {
         name: "section-session",
-        message: "─ Session Actions ─".dim,
+        message: "─ Sessions ─".dim,
         disabled: true,
       },
       {
         name: "pair",
-        message: "Pair WalletConnect URI".green,
+        message: "Pair new WalletConnect URI".green,
       },
       {
         name: "disconnect",
-        message: `Disconnect WalletConnect Session (${summary.paired} paired)`,
+        message: `Disconnect paired session (${summary.paired})`,
         disabled: summary.paired === 0 ? "No paired sessions" : false,
       },
       {
         name: "list-active",
-        message: `List Active Sessions (${summary.paired})`,
+        message: `View paired sessions (${summary.paired})`,
         disabled: summary.paired === 0 ? "No paired sessions" : false,
       },
       {
         name: "list",
-        message: `List All Sessions (${summary.total})`,
+        message: `View all sessions (${summary.total})`,
       },
       {
         name: "section-pending",
-        message: "─ Pending Actions ─".dim,
+        message: "─ Pending approvals ─".dim,
         disabled: true,
       },
       {
         name: "approve",
-        message: `Approve Pending Proposal (${summary.pendingProposals})`,
+        message: `Approve session proposal (${summary.pendingProposals})`,
         disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
       },
       {
         name: "approve-request",
-        message: `Approve Pending Request (${summary.pendingRequests})`,
+        message: `Approve session request (${summary.pendingRequests})`,
         disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
       },
       {
         name: "reject",
-        message: `Reject Pending Proposal (${summary.pendingProposals})`,
+        message: `Reject session proposal (${summary.pendingProposals})`,
         disabled: summary.pendingProposals === 0 ? "No pending proposals" : false,
       },
       {
         name: "reject-request",
-        message: `Reject Pending Request (${summary.pendingRequests})`,
+        message: `Reject session request (${summary.pendingRequests})`,
         disabled: summary.pendingRequests === 0 ? "No pending requests" : false,
       },
       {
         name: "pending",
-        message: `View Pending Proposals (${summary.pendingProposals})`,
+        message: `View pending proposals (${summary.pendingProposals})`,
       },
       {
         name: "pending-requests",
-        message: `View Pending Requests (${summary.pendingRequests})`,
+        message: `View pending requests (${summary.pendingRequests})`,
       },
       {
         name: "section-bundles",
-        message: "─ Bundle Actions ─".dim,
+        message: "─ Bundles & 7702 ─".dim,
         disabled: true,
       },
       {
         name: "bundles",
-        message: `View Captured Bundles (${summary.capturedBundles})`,
+        message: `View captured bundles (${summary.capturedBundles})`,
       },
       {
         name: "build-7702",
-        message: `Build 7702 Tx from Captured Bundle (${summary.capturedBundles})`,
+        message: `Build 7702 transaction from bundle (${summary.capturedBundles})`,
         disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
       },
       {
         name: "clear-bundles",
-        message: "Clear Captured Bundles",
+        message: "Clear captured bundles",
         disabled: summary.capturedBundles === 0 ? "No captured bundles" : false,
       },
-      { name: "mech-test", message: "test 7702 mech pilot".cyan },
-      { name: "refresh-card", message: "Repaint Card".cyan },
+      { name: "mech-test", message: "Test 7702 mech pilot".cyan },
+      { name: "refresh-card", message: "Refresh overview".cyan },
       { name: "exit-menu", message: "Go Back".grey },
     ],
     multiple: false,
