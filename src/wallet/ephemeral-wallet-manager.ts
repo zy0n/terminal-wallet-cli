@@ -20,7 +20,6 @@ import { walletManager } from "./wallet-manager";
 import { getCurrentNetwork } from "../engine/engine";
 import { getChainForName } from "../network/network-util";
 import { HDNodeWallet } from "ethers";
-import { stealthSignerProvider } from "./ephemeral-signer-provider";
 
 type RailgunWalletWithEphemeralSignerProvider = {
   setEphemeralSignerProvider?: (provider: EphemeralSignerProvider) => void;
@@ -101,22 +100,22 @@ const applyScopedDerivationStrategy = (
   walletID: string,
   scopeID?: string,
 ) => {
-  stealthSignerProvider.setCurrentScope(scopeID);
   const strategy = getScopedDerivationStrategy(scopeID);
+  if (!isDefined(strategy)) {
+    return;
+  }
+
   const railgunWallet = fullWalletForID(walletID);
-  if (isDefined(strategy) && isDefined(railgunWallet.setEphemeralWalletDerivationStrategy)) {
+  if (isDefined(railgunWallet.setEphemeralWalletDerivationStrategy)) {
     railgunWallet.setEphemeralWalletDerivationStrategy(strategy);
     return;
   }
 
   if (isDefined(railgunWallet.setEphemeralSignerProvider)) {
-    if (isDefined(strategy)) {
-      railgunWallet.setEphemeralSignerProvider(
-        stealthSignerProvider.withDerivationStrategy(strategy),
-      );
-      return;
-    }
-    railgunWallet.setEphemeralSignerProvider(stealthSignerProvider);
+    railgunWallet.setEphemeralSignerProvider({
+      deriveWallet: strategy,
+      getDBPath: (id: string, chainId: bigint) => [id, chainId.toString(10)],
+    });
   }
 };
 

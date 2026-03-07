@@ -1299,48 +1299,6 @@ const promptReshieldERC20RecipientsFromPrivateSelection = async (
   );
 };
 
-const runBundledCallPreflight = async (
-  chainName: ReturnType<typeof getCurrentNetwork>,
-  calls: WalletConnectBundledCall[],
-  fromAddress?: string,
-  label = "preflight",
-): Promise<boolean> => {
-  const provider = getProviderForChain(chainName) as any;
-  let allPassed = true;
-  console.log('calls', calls)
-  for (let index = 0; index < calls.length; index += 1) {
-    const call = calls[index];
-    try {
-      await provider.call({
-        from: fromAddress,
-        to: call.to,
-        data: call.data,
-        value: parseBundledCallValueToBigInt(call.value),
-      });
-    } catch (error) {
-      allPassed = false;
-      const err = error as any;
-      const reason =
-        err?.shortMessage
-        ?? err?.reason
-        ?? err?.error?.message
-        ?? err?.message
-        ?? "unknown call revert";
-      console.log(
-        `${label} failed at call index ${index}: ${reason}`.red,
-      );
-    }
-  }
-
-  if (!allPassed) {
-    console.log(
-      `One or more bundled calls failed ${label} simulation. Review failing call index(es) before generating/sending 7702 tx.`.yellow,
-    );
-  }
-
-  return allPassed;
-};
-
 const runApproveRequestPrompt = async () => {
   const requestID = await selectPendingRequestID();
   if (!isDefined(requestID)) {
@@ -1739,38 +1697,6 @@ const buildAndSendCrossContract7702FromBundle = async (
       console.log(
         `Using ${bundleContext.type} signer ${signerAddress} for 7702 bundle build.`.grey,
       );
-    }
-  }
-
-  const relayAdaptAddress = connectedAddress;
-
-  const eoaPreflightPassed = await runBundledCallPreflight(
-    chainName,
-    selectedBundle.calls,
-    connectedAddress,
-    "EOA preflight",
-  );
-  const relayPreflightPassed = await runBundledCallPreflight(
-    chainName,
-    selectedBundle.calls,
-    relayAdaptAddress,
-    "RelayAdapt preflight",
-  );
-
-  if (!relayPreflightPassed && eoaPreflightPassed) {
-    console.log(
-      "Calls pass as connected EOA but fail as RelayAdapt sender. This bundle likely depends on msg.sender context and is incompatible with relayed 7702 multicall.".red,
-    );
-    return undefined;
-  }
-
-  if (!eoaPreflightPassed || !relayPreflightPassed) {
-    const continueDespiteFailure = await confirmPrompt(
-      "Preflight simulation failed. Continue anyway?",
-      { initial: false },
-    );
-    if (!continueDespiteFailure) {
-      return undefined;
     }
   }
 
