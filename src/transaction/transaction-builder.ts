@@ -188,6 +188,8 @@ type TerminalTransaction = {
   privateMemo?: any | undefined
 };
 
+const BROADCAST_SUBMISSION_TIMEOUT_MS = 45_000;
+
 const getSelfSignerAddress = (selfSignerWallet?: HDNodeWallet) => {
   return selfSignerWallet?.address ?? getCurrentWalletPublicAddress();
 };
@@ -519,7 +521,20 @@ export const sendBroadcastedTransaction = async (
     "Submitting Broadcasted Transaction... Responses may take up to (1) one minute."
       .yellow,
   );
-  const sendResult = await finalTransaction.send().catch(err=>{
+  const sendResult = await Promise.race([
+    finalTransaction.send(),
+    new Promise<string>((_, reject) => {
+      setTimeout(() => {
+        reject(
+          new Error(
+            `Broadcaster submission timed out after ${
+              BROADCAST_SUBMISSION_TIMEOUT_MS / 1000
+            } seconds. Assume failure and retry if needed.`,
+          ),
+        );
+      }, BROADCAST_SUBMISSION_TIMEOUT_MS);
+    }),
+  ]).catch(err=>{
     const causeMessage = err?.cause?.message ?? "";
     if (
       typeof causeMessage === "string" &&
@@ -539,6 +554,14 @@ export const sendBroadcastedTransaction = async (
     ) {
       console.log(
         "Fee tuple became invalid (priority > max fee). Re-run Fee Options, regenerate proof, and submit again.".yellow,
+      );
+    }
+    if (
+      typeof err?.message === "string" &&
+      err.message.toLowerCase().includes("timed out")
+    ) {
+      console.log(
+        "Broadcaster did not return a tx hash within 45 seconds. Treating submission as failed locally.".yellow,
       );
     }
     if(isDefined(err.cause)){

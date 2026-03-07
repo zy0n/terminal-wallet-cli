@@ -18,6 +18,7 @@ export let wakuClient: WakuBroadcasterClient;
 const trustedFeeSigner = '0zk1qyzgh9ctuxm6d06gmax39xutjgrawdsljtv80lqnjtqp3exxayuf0rv7j6fe3z53laetcl9u3cma0q9k4npgy8c8ga4h6mx83v09m8ewctsekw4a079dcl5sw4k'
 const broadcasterOptions: BroadcasterOptions = {
   trustedFeeSigner,
+  feeExpirationTimeout: 45_000,
 };
 
 const broadcasterDebugger: BroadcasterDebugger = {
@@ -98,7 +99,6 @@ export const startWakuClient = async (chainName: NetworkName) => {
   const chain = getChainForName(chainName);
   const peerOverrides = remoteConfig.additionalDirectPeers ?? [];
   broadcasterOptions.additionalDirectPeers = peerOverrides;
-  // @ts-expect-error - useDNSDiscovery is not in the type but is supported by the client
   broadcasterOptions.useDNSDiscovery = true;
   broadcasterOptions.pubSubTopic = remoteConfig.wakuPubSubTopic;
   pushUILog(`Starting Waku Client on ${chainName} with pubSubTopic ${remoteConfig.wakuPubSubTopic} and ${peerOverrides.length} additional direct peers.`, "log");

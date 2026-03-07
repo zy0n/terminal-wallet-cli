@@ -12,6 +12,9 @@ export type BroadcasterOptions = {
   additionalDirectPeers?: string[];
   trustedFeeSigner: string | string [];
   peerDiscoveryTimeout?: number;
+  feeExpirationTimeout?: number;
+  historicalLookBackTime?: number;
+  useDNSDiscovery?: boolean;
 };
 export type BroadcasterConnectionStatusCallback = (
   chain: Chain,
