@@ -9,9 +9,10 @@ import {
   EphemeralKeyManager,
   fullWalletForID,
   gasEstimateForShieldBaseToken,
+  getShieldPrivateKeySignatureMessage,
   populateShieldBaseToken,
 } from "@railgun-community/wallet";
-import { formatUnits } from "ethers";
+import { HDNodeWallet, formatUnits, keccak256 } from "ethers";
 import { getChainForName, getWrappedTokenInfoForChain } from "../../network/network-util";
 import {
   calculateEstimatedGasCost,
@@ -21,14 +22,31 @@ import { PrivateGasEstimate } from "../../models/transaction-models";
 import { getCurrentShieldPrivateKey } from "../../wallet/public-utils";
 import { getCurrentNetwork } from "../../engine/engine";
 
+const getShieldSigningContext = async (selfSignerWallet?: HDNodeWallet) => {
+  if (!selfSignerWallet) {
+    return getCurrentShieldPrivateKey();
+  }
+
+  const shieldSignatureMessage = getShieldPrivateKeySignatureMessage();
+  const shieldPrivateKey = keccak256(
+    await selfSignerWallet.signMessage(shieldSignatureMessage),
+  );
+
+  return {
+    shieldPrivateKey,
+    fromWalletAddress: selfSignerWallet.address,
+  };
+};
+
 export const getShieldBaseTokenGasDetails = async (
   chainName: NetworkName,
   wrappedERC20Amount: RailgunERC20AmountRecipient,
   railgunWalletID: string,
-  encryptionKey: string
+  encryptionKey: string,
+  selfSignerWallet?: HDNodeWallet,
 ): Promise<PrivateGasEstimate> => {
   const { shieldPrivateKey, fromWalletAddress } =
-    await getCurrentShieldPrivateKey();
+    await getShieldSigningContext(selfSignerWallet);
 
   const wrappedInfo = getWrappedTokenInfoForChain(chainName);
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
@@ -76,10 +94,11 @@ export const getProvedShieldBaseTokenTransaction = async (
   wrappedERC20Amount: RailgunERC20AmountRecipient,
   privateGasEstimate: PrivateGasEstimate,
   railgunWalletID: string,
-  encryptionKey: string
+  encryptionKey: string,
+  selfSignerWallet?: HDNodeWallet,
 ) => {
   const { shieldPrivateKey, fromWalletAddress } =
-    await getCurrentShieldPrivateKey();
+    await getShieldSigningContext(selfSignerWallet);
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
   const ephemeralManager = new EphemeralKeyManager(
     fullWalletForID(railgunWalletID),

@@ -22,7 +22,6 @@ import { getCurrentNetwork } from "../engine/engine";
 import {
   getCurrentRailgunAddress,
   getGasBalanceForAddress,
-  getCurrentWalletPublicAddress,
 } from "../wallet/wallet-util";
 import {
   tokenAmountSelectionPrompt,
@@ -46,7 +45,7 @@ import {
 import { createLiveSelect } from "./live-select";
 import { getWrappedTokenInfoForChain } from "../network/network-util";
 import { getERC20Balance } from "../balance/token-util";
-import { formatUnits } from "ethers";
+import { HDNodeWallet, formatUnits } from "ethers";
 
 const { Select, Input } = require("enquirer");
 
@@ -106,7 +105,11 @@ const isCancelLifecycleError = (error: unknown) => {
 const runTransactionBuilderSafely = async (
   chainName: ReturnType<typeof getCurrentNetwork>,
   transactionType: RailgunTransaction,
-  params: { selections: unknown[]; confirmAmountsDisabled?: boolean },
+  params: {
+    selections: unknown[];
+    confirmAmountsDisabled?: boolean;
+    selfSignerWallet?: HDNodeWallet;
+  },
 ) => {
   try {
     await runTransactionBuilder(chainName, transactionType, params as any);
@@ -120,9 +123,13 @@ const runTransactionBuilderSafely = async (
 };
 
 const getProfileScopeID = (profile: {
+  signerStrategyScopeID?: string;
   scopeID?: string;
   slot?: number;
 }) => {
+  if (isDefined(profile.signerStrategyScopeID) && profile.signerStrategyScopeID.trim().length) {
+    return profile.signerStrategyScopeID.trim();
+  }
   if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
     return profile.scopeID.trim();
   }
@@ -132,38 +139,208 @@ const getProfileScopeID = (profile: {
   return undefined;
 };
 
+const getStealthSignerScopeCandidatesForProfile = (profile: {
+  scopeID?: string;
+  signerStrategyScopeID?: string;
+  slot?: number;
+}) => {
+  const candidates: string[] = [];
+  const add = (value?: string) => {
+    if (!isDefined(value)) {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed.length) {
+      return;
+    }
+    if (!candidates.includes(trimmed)) {
+      candidates.push(trimmed);
+    }
+  };
+
+  add(profile.signerStrategyScopeID);
+  add(profile.scopeID);
+  if (isDefined(profile.slot)) {
+    add(slotToScopeID(profile.slot));
+  }
+
+  if (isDefined(profile.signerStrategyScopeID)) {
+    const maybeNumber = Number(profile.signerStrategyScopeID);
+    if (Number.isInteger(maybeNumber) && maybeNumber >= 0) {
+      add(slotToScopeID(maybeNumber));
+    }
+  }
+
+  return candidates;
+};
+
 const prepareStealthSessionForTransaction = async (profile: {
   name: string;
+  accountAddress?: string;
+  signerStrategyScopeID?: string;
   scopeID?: string;
   slot?: number;
 }) => {
   const encryptionKey = await getSaltedPassword();
   if (!isDefined(encryptionKey)) {
-    return false;
+    return undefined;
   }
 
-  const scopeID = getProfileScopeID(profile);
   try {
-    const session = await setCurrentEphemeralWalletSession(encryptionKey, scopeID);
+    const targetAddress = profile.accountAddress?.toLowerCase();
+
+    const tryResolveStealthSession = async (
+      scopeID?: string,
+      index?: number,
+    ): Promise<Optional<Awaited<ReturnType<typeof setCurrentEphemeralWalletSession>>>> => {
+      if (typeof index === "number") {
+        const indexed = await setEphemeralWalletIndex(encryptionKey, index, scopeID);
+        const indexedAddress = indexed?.currentAddress?.toLowerCase();
+        if (isDefined(targetAddress) && indexedAddress !== targetAddress) {
+          return undefined;
+        }
+      }
+
+      const session = await setCurrentEphemeralWalletSession(
+        encryptionKey,
+        scopeID,
+        { skipAutoSync: true },
+      );
+      if (!isDefined(session)) {
+        return undefined;
+      }
+
+      const sessionAddress = session.currentAddress.toLowerCase();
+      if (isDefined(targetAddress) && sessionAddress !== targetAddress) {
+        return undefined;
+      }
+
+      return session;
+    };
+
+    const uniqueScopeCandidates = new Set<string>();
+    for (const scopeID of getStealthSignerScopeCandidatesForProfile(profile)) {
+      uniqueScopeCandidates.add(scopeID);
+    }
+    if (isDefined(targetAddress)) {
+      for (const sessionScope of listEphemeralSessionScopes()) {
+        if (sessionScope.lastKnownAddress?.toLowerCase() === targetAddress) {
+          uniqueScopeCandidates.add(sessionScope.scopeID);
+        }
+      }
+    }
+
+    const uniqueIndexCandidates = new Set<number>();
+    if (typeof profile.slot === "number") {
+      uniqueIndexCandidates.add(profile.slot);
+    }
+    if (isDefined(targetAddress)) {
+      const knownIndex = getKnownEphemeralIndexForAddress(targetAddress);
+      if (typeof knownIndex === "number") {
+        uniqueIndexCandidates.add(knownIndex);
+      }
+      for (const sessionScope of listEphemeralSessionScopes()) {
+        if (
+          sessionScope.lastKnownAddress?.toLowerCase() === targetAddress
+          && typeof sessionScope.lastKnownIndex === "number"
+        ) {
+          uniqueIndexCandidates.add(sessionScope.lastKnownIndex);
+        }
+      }
+    }
+
+    const scopeCandidates = [...uniqueScopeCandidates.values()];
+    const indexCandidates = [...uniqueIndexCandidates.values()];
+
+    let session: Awaited<ReturnType<typeof setCurrentEphemeralWalletSession>> | undefined;
+    let matchedScope: Optional<string>;
+    let matchedIndex: Optional<number>;
+
+    for (const scopeID of [...scopeCandidates, getProfileScopeID(profile), undefined]) {
+      for (const index of indexCandidates) {
+        const resolved = await tryResolveStealthSession(scopeID, index);
+        if (!isDefined(resolved)) {
+          continue;
+        }
+        session = resolved;
+        matchedScope = scopeID;
+        matchedIndex = index;
+        break;
+      }
+      if (isDefined(session)) {
+        break;
+      }
+
+      const resolved = await tryResolveStealthSession(scopeID);
+      if (!isDefined(resolved)) {
+        continue;
+      }
+      session = resolved;
+      matchedScope = scopeID;
+      break;
+    }
+
+    if (!isDefined(session) && isDefined(targetAddress)) {
+      const knownIndices = getKnownEphemeralAddresses().map((entry) => entry.index);
+      const fallbackIndexSet = new Set<number>([...indexCandidates, ...knownIndices]);
+      const highestKnownIndex = fallbackIndexSet.size
+        ? Math.max(...[...fallbackIndexSet.values()])
+        : 0;
+      const fallbackUpperBound = Math.min(Math.max(highestKnownIndex + 8, 32), 128);
+      for (let index = 0; index <= fallbackUpperBound; index += 1) {
+        fallbackIndexSet.add(index);
+      }
+
+      const fallbackIndices = [...fallbackIndexSet.values()].sort((left, right) => {
+        return left - right;
+      });
+
+      for (const scopeID of [...scopeCandidates, getProfileScopeID(profile), undefined]) {
+        for (const index of fallbackIndices) {
+          const resolved = await tryResolveStealthSession(scopeID, index);
+          if (!isDefined(resolved)) {
+            continue;
+          }
+          session = resolved;
+          matchedScope = scopeID;
+          matchedIndex = index;
+          break;
+        }
+        if (isDefined(session)) {
+          break;
+        }
+      }
+    }
+
     if (!isDefined(session)) {
-      console.log("Failed to set current ephemeral wallet session.".yellow);
+      if (isDefined(targetAddress)) {
+        console.log(
+          [
+            "Resolved stealth signer does not match the active stealth profile address.",
+            `profile=${profile.accountAddress}`,
+            "session=<unresolved>",
+          ].join(" ").yellow,
+        );
+      } else {
+        console.log("Failed to set current ephemeral wallet session.".yellow);
+      }
       await confirmPromptCatchRetry("");
-      return false;
+      return undefined;
     }
 
     console.log(
       `Using stealth session ${session.currentAddress} (index ${session.currentIndex})${
         session.scopeID ? ` scope=${session.scopeID}` : ""
-      } for ${profile.name}.`.grey,
+      }${isDefined(matchedScope) ? ` matched-scope=${matchedScope}` : ""}${isDefined(matchedIndex) ? ` matched-index=${matchedIndex}` : ""} for ${profile.name}.`.grey,
     );
 
-    return true;
+    return session;
   } catch (error) {
     console.log(
       `Failed to set current ephemeral wallet session: ${(error as Error).message}`.yellow,
     );
     await confirmPromptCatchRetry("");
-    return false;
+    return undefined;
   }
 };
 
@@ -456,16 +633,8 @@ const runWithdrawReshieldERC20FromProfile = async () => {
     return;
   }
 
-  const currentPublicAddress = getCurrentWalletPublicAddress().toLowerCase();
-  if (activeProfile.accountAddress.toLowerCase() !== currentPublicAddress) {
-    console.log(
-      [
-        "Reshield requires the active signer account to match the active stealth profile address.",
-        `profile=${activeProfile.accountAddress}`,
-        `current=${currentPublicAddress}`,
-      ].join(" ").yellow,
-    );
-    await confirmPromptCatchRetry("");
+  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
+  if (!sessionReady) {
     return;
   }
 
@@ -477,6 +646,9 @@ const runWithdrawReshieldERC20FromProfile = async () => {
     "Reshield ERC20 from External Stealth Profile",
     true,
     true,
+    undefined,
+    false,
+    activeProfile.accountAddress,
   );
 
   const amountSelections = await tokenAmountSelectionPrompt(
@@ -493,11 +665,6 @@ const runWithdrawReshieldERC20FromProfile = async () => {
     return;
   }
 
-  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
-  if (!sessionReady) {
-    return;
-  }
-
   console.log(
     [
       `Reshield profile=${activeProfile.name}`,
@@ -509,6 +676,7 @@ const runWithdrawReshieldERC20FromProfile = async () => {
   await runTransactionBuilderSafely(chainName, RailgunTransaction.Shield, {
     selections: amountSelections,
     confirmAmountsDisabled: false,
+    selfSignerWallet: sessionReady.signer,
 
   });
 };
@@ -519,22 +687,18 @@ const runWithdrawReshieldETHFromProfile = async () => {
     return;
   }
 
-  const currentPublicAddress = getCurrentWalletPublicAddress().toLowerCase();
-  if (activeProfile.accountAddress.toLowerCase() !== currentPublicAddress) {
-    console.log(
-      [
-        "Reshield requires the active signer account to match the active stealth profile address.",
-        `profile=${activeProfile.accountAddress}`,
-        `current=${currentPublicAddress}`,
-      ].join(" ").yellow,
-    );
-    await confirmPromptCatchRetry("");
+  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
+  if (!sessionReady) {
     return;
   }
 
   const destinationPrivateAddress = getCurrentRailgunAddress();
   const chainName = getCurrentNetwork();
-  const wrappedReadableAmount = await getWrappedTokenBalance(chainName, true);
+  const wrappedReadableAmount = await getWrappedTokenBalance(
+    chainName,
+    true,
+    activeProfile.accountAddress,
+  );
   const amountSelections = await tokenAmountSelectionPrompt(
     [wrappedReadableAmount],
     false,
@@ -549,11 +713,6 @@ const runWithdrawReshieldETHFromProfile = async () => {
     return;
   }
 
-  const sessionReady = await prepareStealthSessionForTransaction(activeProfile);
-  if (!sessionReady) {
-    return;
-  }
-
   console.log(
     [
       `Reshield profile=${activeProfile.name}`,
@@ -565,6 +724,7 @@ const runWithdrawReshieldETHFromProfile = async () => {
   await runTransactionBuilderSafely(chainName, RailgunTransaction.ShieldBase, {
     selections: amountSelections,
     confirmAmountsDisabled: false,
+    selfSignerWallet: sessionReady.signer,
 
   });
 };

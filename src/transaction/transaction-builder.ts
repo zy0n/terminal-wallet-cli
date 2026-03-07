@@ -21,7 +21,7 @@ import {
   tokenAmountSelectionPrompt,
   transferTokenAmountSelectionPrompt,
 } from "../ui/token-ui";
-import { TransactionResponse, formatUnits } from "ethers";
+import { HDNodeWallet, TransactionResponse, formatUnits } from "ethers";
 import {
   clearHashedPassword,
   getSaltedPassword,
@@ -61,6 +61,7 @@ import {
 import {
   getTransactionURLForChain,
   getRailgunProxyAddressForChain,
+  getProviderForChain,
   getWrappedTokenInfoForChain,
 } from "../network/network-util";
 import { getTokenInfo } from "../balance/token-util";
@@ -177,7 +178,86 @@ type TerminalTransaction = {
   sendTransactionDisabled?: any | undefined,
   provedTransaction?: any | undefined,
   selfSignerInfo?: any | undefined,
+  selfSignerWallet?: HDNodeWallet | undefined,
   privateMemo?: any | undefined
+};
+
+const getSelfSignerAddress = (selfSignerWallet?: HDNodeWallet) => {
+  return selfSignerWallet?.address ?? getCurrentWalletPublicAddress();
+};
+
+const getActiveSendSigner = (
+  chainName: NetworkName,
+  selfSignerWallet?: HDNodeWallet,
+) => {
+  return isDefined(selfSignerWallet)
+    ? selfSignerWallet.connect(getProviderForChain(chainName))
+    : getCurrentEthersWallet();
+};
+
+const ensureShieldApprovals = async (
+  chainName: NetworkName,
+  selections: RailgunSelectedAmount[],
+  selfSignerWallet?: HDNodeWallet,
+) => {
+  const tokensToApprove = getERC20AmountRecipients(selections);
+  if (!tokensToApprove.length) {
+    return true;
+  }
+
+  const selfSignerAddress = getSelfSignerAddress(selfSignerWallet);
+  const spender = getRailgunProxyAddressForChain(chainName);
+  const populatedApprovalTransactions =
+    await populatePublicERC20ApprovalTransactions(
+      chainName,
+      tokensToApprove,
+      selfSignerAddress,
+      spender,
+    );
+
+  if (!populatedApprovalTransactions.length) {
+    return true;
+  }
+
+  let approvalsLeft = populatedApprovalTransactions.length;
+  for (const approvalTransaction of populatedApprovalTransactions) {
+    const ethersWallet = getActiveSendSigner(chainName, selfSignerWallet);
+    const {
+      privateGasEstimate: gasEstimate,
+      populatedTransaction,
+    } = await calculatePublicTransactionGasDetais(
+      chainName,
+      approvalTransaction.populatedTransaction,
+    );
+
+    const sendPublicTransaction = await confirmPrompt(
+      `CONFIRM | APPROVE ${spender.cyan} for [${
+        approvalTransaction.symbol.cyan
+      }]? It will cost: ${
+        gasEstimate.estimatedCost.toString().green
+      } [${gasEstimate.symbol.cyan}]`,
+    );
+
+    if (sendPublicTransaction) {
+      const txResult = await ethersWallet.sendTransaction(
+        populatedTransaction,
+      );
+      await bgWatchSelfSignedTx(
+        chainName,
+        txResult,
+        RailgunTransaction.PublicTransfer,
+      );
+      approvalsLeft -= 1;
+    }
+  }
+
+  if (approvalsLeft !== 0) {
+    console.log("APPROVALS NOT COMPLETED".yellow);
+    return false;
+  }
+
+  console.log("APPROVALS COMPLETED".green);
+  return true;
 };
 
 const getDisplayTransactions = async (
@@ -456,11 +536,14 @@ export const sendSelfSignedTransaction = async (
   provedTransaction: any,
   transactionType = RailgunTransaction.PublicTransfer,
   encryptionKey?: string,
+  selfSignerWallet?: HDNodeWallet,
 ) => {
-  const ethersWallet = await getEthersWalletForSigner(
-    selfSignerInfo,
-    chainName,
-  );
+  const ethersWallet = isDefined(selfSignerWallet)
+    ? getActiveSendSigner(chainName, selfSignerWallet)
+    : await getEthersWalletForSigner(
+      selfSignerInfo,
+      chainName,
+    );
   const { transaction: innerTransaction } = provedTransaction;
   if (isDefined(innerTransaction)) {
     const txResult = await ethersWallet.sendTransaction(innerTransaction);
@@ -502,6 +585,7 @@ export const runTransactionBuilder = async (
     sendTransactionDisabled,
     provedTransaction,
     selfSignerInfo,
+    selfSignerWallet,
     privateMemo
   } = resultObj ?? {
     confirmAmountsDisabled: undefined,
@@ -516,6 +600,7 @@ export const runTransactionBuilder = async (
     sendTransactionDisabled: undefined,
     provedTransaction: undefined,
     selfSignerInfo: undefined,
+    selfSignerWallet: undefined,
     privateMemo: undefined
   };
   if (!isDefined(resultObj)) {
@@ -546,7 +631,7 @@ export const runTransactionBuilder = async (
   }
 
   const hasBroadcasterInfo =
-    isDefined(broadcasterSelection) || isDefined(selfSignerInfo);
+    isDefined(broadcasterSelection) || isDefined(selfSignerInfo) || isDefined(selfSignerWallet);
 
   const canHaveMemo = transactionType === RailgunTransaction.Transfer;
 
@@ -701,64 +786,14 @@ export const runTransactionBuilder = async (
               );
               selection = _selection;
 
-              const tokensToApprove = selection.amountSelections.map(
-                ({
-                  tokenAddress,
-                  recipientAddress,
-                  selectedAmount: amount,
-                }) => {
-                  return { tokenAddress, amount, recipientAddress };
-                },
+              const approvalsCompleted = await ensureShieldApprovals(
+                chainName,
+                selection.amountSelections,
+                selfSignerWallet,
               );
-
-              if (isDefined(tokensToApprove)) {
-                const spender = getRailgunProxyAddressForChain(chainName);
-                populatedApprovalTransactions =
-                  await populatePublicERC20ApprovalTransactions(
-                    chainName,
-                    tokensToApprove,
-                    getCurrentWalletPublicAddress(),
-                    spender,
-                  );
-
-                if (populatedApprovalTransactions.length > 0) {
-                  let approvalsLeft = populatedApprovalTransactions.length;
-                  for (const approvalTransaction of populatedApprovalTransactions) {
-                    const ethersWallet = getCurrentEthersWallet();
-                    const {
-                      privateGasEstimate: gasEstimate,
-                      populatedTransaction,
-                    } = await calculatePublicTransactionGasDetais(
-                      chainName,
-                      approvalTransaction.populatedTransaction,
-                    );
-
-                    const sendPublicTransaction = await confirmPrompt(
-                      `CONFIRM | APPROVE ${spender.cyan} for [${
-                        approvalTransaction.symbol.cyan
-                      }]? It will cost: ${
-                        gasEstimate.estimatedCost.toString().green
-                      } [${gasEstimate.symbol.cyan}]`,
-                    );
-                    if (sendPublicTransaction) {
-                      const txResult = await ethersWallet.sendTransaction(
-                        populatedTransaction,
-                      );
-                      await bgWatchSelfSignedTx(
-                        chainName,
-                        txResult,
-                        RailgunTransaction.PublicTransfer,
-                      );
-                      approvalsLeft -= 1;
-                    }
-                  }
-                  if (approvalsLeft !== 0) {
-                    console.log("APPROVALS NOT COMPLETED".yellow);
-                    selection = undefined;
-                    break;
-                  }
-                  console.log("APPROVALS COMPLETED".green);
-                }
+              if (!approvalsCompleted) {
+                selection = undefined;
+                break;
               }
 
               break;
@@ -988,62 +1023,14 @@ export const runTransactionBuilder = async (
               );
               selection = _selection;
 
-              const tokensToApprove = selection.amountSelections.map(
-                ({
-                  tokenAddress,
-                  recipientAddress,
-                  selectedAmount: amount,
-                }) => {
-                  return { tokenAddress, amount, recipientAddress };
-                },
+              const approvalsCompleted = await ensureShieldApprovals(
+                chainName,
+                selection.amountSelections,
+                selfSignerWallet,
               );
-
-              if (isDefined(tokensToApprove)) {
-                const spender = getRailgunProxyAddressForChain(chainName);
-                populatedApprovalTransactions =
-                  await populatePublicERC20ApprovalTransactions(
-                    chainName,
-                    tokensToApprove,
-                    getCurrentWalletPublicAddress(),
-                    spender,
-                  );
-                if (populatedApprovalTransactions.length > 0) {
-                  let approvalsLeft = populatedApprovalTransactions.length;
-                  for (const approvalTransaction of populatedApprovalTransactions) {
-                    const ethersWallet = getCurrentEthersWallet();
-                    const {
-                      privateGasEstimate: gasEstimate,
-                      populatedTransaction,
-                    } = await calculatePublicTransactionGasDetais(
-                      chainName,
-                      approvalTransaction.populatedTransaction,
-                    );
-                    const sendPublicTransaction = await confirmPrompt(
-                      `CONFIRM | APPROVE ${spender.cyan} for [${
-                        approvalTransaction.symbol.cyan
-                      }]? It will cost: ${
-                        gasEstimate.estimatedCost.toString().green
-                      } [${gasEstimate.symbol.cyan}]`,
-                    );
-                    if (sendPublicTransaction) {
-                      const txResult = await ethersWallet.sendTransaction(
-                        populatedTransaction,
-                      );
-                      await bgWatchSelfSignedTx(
-                        chainName,
-                        txResult,
-                        RailgunTransaction.PublicTransfer,
-                      );
-                      approvalsLeft -= 1;
-                    }
-                  }
-                  if (approvalsLeft !== 0) {
-                    console.log("APPROVALS NOT COMPLETED".yellow);
-                    selection = undefined;
-                    break;
-                  }
-                  console.log("APPROVALS COMPLETED".green);
-                }
+              if (!approvalsCompleted) {
+                selection = undefined;
+                break;
               }
 
               break;
@@ -1275,10 +1262,29 @@ export const runTransactionBuilder = async (
             break;
           }
           case RailgunTransaction.Shield: {
+            const approvalsCompleted = await ensureShieldApprovals(
+              chainName,
+              selections,
+              selfSignerWallet,
+            );
+            if (!approvalsCompleted) {
+              newRefObj = {
+                selections,
+                confirmAmountsDisabled: false,
+                selectFeesDisabled: true,
+                encryptionKey: password,
+                incomingHeader: header !== "" ? header : incomingHeader,
+                selfSignerInfo: getWalletInfoForName(getCurrentWalletName()),
+                selfSignerWallet,
+              };
+              break;
+            }
+
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
             let gasEstimate = await getShieldERC20TransactionGasDetails(
               chainName,
               erc20AmountRecipients,
+              selfSignerWallet,
             );
 
             const updatedGasSelection = await runGasFeeSelectionPrompt(
@@ -1292,6 +1298,7 @@ export const runTransactionBuilder = async (
               gasEstimate = await getShieldERC20TransactionGasDetails(
                 chainName,
                 erc20AmountRecipients,
+                selfSignerWallet,
               );
             }
 
@@ -1309,6 +1316,7 @@ export const runTransactionBuilder = async (
               encryptionKey: password,
               incomingHeader: header !== "" ? header : incomingHeader,
               selfSignerInfo: getWalletInfoForName(getCurrentWalletName()),
+              selfSignerWallet,
             };
             break;
           }
@@ -1318,7 +1326,8 @@ export const runTransactionBuilder = async (
               chainName,
               erc20AmountRecipients[0],
               getCurrentRailgunID(),
-              password
+              password,
+              selfSignerWallet,
             );
 
             const updatedGasSelection = await runGasFeeSelectionPrompt(
@@ -1334,6 +1343,7 @@ export const runTransactionBuilder = async (
                 erc20AmountRecipients[0],
                 getCurrentRailgunID(),
                 password,
+                selfSignerWallet,
               );
             }
 
@@ -1351,6 +1361,7 @@ export const runTransactionBuilder = async (
               encryptionKey: password,
               incomingHeader: header !== "" ? header : incomingHeader,
               selfSignerInfo: getWalletInfoForName(getCurrentWalletName()),
+              selfSignerWallet,
             };
             break;
           }
@@ -1361,6 +1372,7 @@ export const runTransactionBuilder = async (
               await populateAndCalculateGasForERC20Transaction(
                 chainName,
                 erc20AmountRecipients[0],
+                getSelfSignerAddress(selfSignerWallet),
               );
 
             const updatedGasSelection = await runGasFeeSelectionPrompt(
@@ -1375,6 +1387,7 @@ export const runTransactionBuilder = async (
                 await populateAndCalculateGasForERC20Transaction(
                   chainName,
                   erc20AmountRecipients[0],
+                  getSelfSignerAddress(selfSignerWallet),
                 ));
             }
 
@@ -1394,6 +1407,7 @@ export const runTransactionBuilder = async (
               encryptionKey: password,
               incomingHeader: header !== "" ? header : incomingHeader,
               selfSignerInfo: getWalletInfoForName(getCurrentWalletName()),
+              selfSignerWallet,
             };
             break;
           }
@@ -1403,6 +1417,7 @@ export const runTransactionBuilder = async (
               await populateAndCalculateGasForBaseTokenTransaction(
                 chainName,
                 erc20AmountRecipients[0],
+                getSelfSignerAddress(selfSignerWallet),
               );
 
             const updatedGasSelection = await runGasFeeSelectionPrompt(
@@ -1417,6 +1432,7 @@ export const runTransactionBuilder = async (
                 await populateAndCalculateGasForBaseTokenTransaction(
                   chainName,
                   erc20AmountRecipients[0],
+                  getSelfSignerAddress(selfSignerWallet),
                 ));
             }
 
@@ -1436,6 +1452,7 @@ export const runTransactionBuilder = async (
               encryptionKey: password,
               incomingHeader: header !== "" ? header : incomingHeader,
               selfSignerInfo: getWalletInfoForName(getCurrentWalletName()),
+              selfSignerWallet,
             };
             break;
           }
@@ -1735,6 +1752,7 @@ export const runTransactionBuilder = async (
               chainName,
               erc20AmountRecipients,
               privateGasEstimate,
+              selfSignerWallet,
             );
             break;
           }
@@ -1754,7 +1772,8 @@ export const runTransactionBuilder = async (
               erc20AmountRecipients[0],
               privateGasEstimate,
               getCurrentRailgunID(),
-              encryptionKey
+              encryptionKey,
+              selfSignerWallet,
             );
             break;
           }
@@ -1810,6 +1829,7 @@ export const runTransactionBuilder = async (
           privateGasEstimate,
           provedTransaction: _provedTransaction,
           selfSignerInfo,
+          selfSignerWallet,
           privateMemo
         });
       }
@@ -1841,6 +1861,7 @@ export const runTransactionBuilder = async (
               provedTransaction,
               transactionType,
               encryptionKey,
+              selfSignerWallet,
             );
           }
         } catch (error) {
@@ -1861,6 +1882,7 @@ export const runTransactionBuilder = async (
             broadcasterSelection,
             privateGasEstimate,
             selfSignerInfo,
+            selfSignerWallet,
             // provedTransaction,
             privateMemo
           });

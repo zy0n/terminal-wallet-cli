@@ -16,6 +16,7 @@ import {
   getMaxBalanceLength,
   getMaxSymbolLengthFromBalances,
   getPrivateERC20BalancesForChain,
+  getPublicERC20BalancesForAddress,
   getPublicERC20BalancesForChain,
 } from "../balance/balance-util";
 import {
@@ -48,9 +49,16 @@ export const tokenSelectionPrompt = async (
   publicBalances: boolean = false,
   amountRecipients?: RailgunERC20AmountRecipient[],
   addGasToken: boolean = false,
+  publicAddressOverride?: string,
 ) => {
   const balances = publicBalances
-    ? await getPublicERC20BalancesForChain(
+    ? isDefined(publicAddressOverride)
+      ? await getPublicERC20BalancesForAddress(
+        chainName,
+        publicAddressOverride,
+        publicBalances && addGasToken,
+      )
+      : await getPublicERC20BalancesForChain(
         chainName,
         publicBalances && addGasToken,
       )

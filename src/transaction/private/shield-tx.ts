@@ -5,24 +5,44 @@ import {
   TransactionGasDetails,
 } from "@railgun-community/shared-models";
 import {
+  getShieldPrivateKeySignatureMessage,
   gasEstimateForShield,
   populateShield,
 } from "@railgun-community/wallet";
-import { formatUnits } from "ethers";
+import { HDNodeWallet, formatUnits, keccak256 } from "ethers";
 import {
   calculateEstimatedGasCost,
   getPublicGasDetails,
 } from "../../gas/gas-util";
-import { getCurrentShieldPrivateKey } from "../../wallet/public-utils";
+import {
+  getCurrentShieldPrivateKey,
+} from "../../wallet/public-utils";
 import { PrivateGasEstimate } from "../../models/transaction-models";
 import { getWrappedTokenInfoForChain } from "../../network/network-util";
+
+const getShieldSigningContext = async (selfSignerWallet?: HDNodeWallet) => {
+  if (!selfSignerWallet) {
+    return getCurrentShieldPrivateKey();
+  }
+
+  const shieldSignatureMessage = getShieldPrivateKeySignatureMessage();
+  const shieldPrivateKey = keccak256(
+    await selfSignerWallet.signMessage(shieldSignatureMessage),
+  );
+
+  return {
+    shieldPrivateKey,
+    fromWalletAddress: selfSignerWallet.address,
+  };
+};
 
 export const getShieldERC20TransactionGasDetails = async (
   chainName: NetworkName,
   erc20AmountRecipients: RailgunERC20AmountRecipient[],
+  selfSignerWallet?: HDNodeWallet,
 ): Promise<PrivateGasEstimate> => {
   const { shieldPrivateKey, fromWalletAddress } =
-    await getCurrentShieldPrivateKey();
+    await getShieldSigningContext(selfSignerWallet);
   const wrappedInfo = getWrappedTokenInfoForChain(chainName);
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
 
@@ -59,9 +79,10 @@ export const getProvedShieldERC20Transaction = async (
   chainName: NetworkName,
   erc20AmountRecipients: RailgunERC20AmountRecipient[],
   privateGasEstimate: PrivateGasEstimate,
+  selfSignerWallet?: HDNodeWallet,
 ) => {
   const { shieldPrivateKey, fromWalletAddress } =
-    await getCurrentShieldPrivateKey();
+    await getShieldSigningContext(selfSignerWallet);
   const txIDVersion = TXIDVersion.V2_PoseidonMerkle;
 
   const { transaction } = await populateShield(

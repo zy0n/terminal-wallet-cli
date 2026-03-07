@@ -29,6 +29,7 @@ import { Contract, formatUnits } from "ethers";
 import "colors";
 import {
   getCurrentRailgunID,
+  getGasBalanceForAddress,
   getCurrentWalletGasBalance,
   shouldDisplayPrivateBalances,
 } from "../wallet/wallet-util";
@@ -37,6 +38,7 @@ import { stripColors } from "colors";
 import configDefaults from "../config/config-defaults";
 import { walletManager } from "../wallet/wallet-manager";
 import { getWalletTransactionHistory, walletForID } from "@railgun-community/wallet";
+import { getERC20AddressesForChain, getERC20Balance } from "./token-util";
 
 type ShieldPendingTimeline = {
   etaText: string;
@@ -302,13 +304,16 @@ const getPrivateNFTBalancesForChain = async (
 export const getWrappedTokenBalance = async (
   chainName: NetworkName,
   useGasBalance = false,
+  publicAddressOverride?: string,
 ) => {
   const wrappedInfo = getWrappedTokenInfoForChain(chainName);
 
   const { name } = await getTokenInfo(chainName, wrappedInfo.wrappedAddress);
 
   const wrappedBalance = useGasBalance
-    ? await getCurrentWalletGasBalance()
+    ? isDefined(publicAddressOverride)
+      ? await getGasBalanceForAddress(publicAddressOverride)
+      : await getCurrentWalletGasBalance()
     : getPrivateERC20BalanceForChain(chainName, wrappedInfo.wrappedAddress);
   const wrappedDecimals = NETWORK_CONFIG[chainName].baseToken.decimals;
   const wrappedReadableAmount: RailgunReadableAmount = {
@@ -320,6 +325,49 @@ export const getWrappedTokenBalance = async (
     decimals: wrappedDecimals,
   };
   return wrappedReadableAmount;
+};
+
+export const getPublicERC20BalancesForAddress = async (
+  chainName: NetworkName,
+  publicAddress: string,
+  showBaseBalance = false,
+): Promise<RailgunDisplayBalance[]> => {
+  const tokenAddresses = getERC20AddressesForChain(chainName);
+
+  const balances = (
+    await Promise.all(
+      tokenAddresses.map(async (tokenAddress) => {
+        const amount = await getERC20Balance(chainName, tokenAddress, publicAddress);
+        if (amount <= 0n) {
+          return undefined;
+        }
+
+        const { name, symbol, decimals } = await getTokenInfo(chainName, tokenAddress);
+        return {
+          tokenAddress,
+          amount,
+          decimals,
+          name,
+          symbol,
+        } as RailgunDisplayBalance;
+      }),
+    )
+  ).filter((balance): balance is RailgunDisplayBalance => isDefined(balance));
+
+  if (showBaseBalance) {
+    const wrappedReadableAmount = (await getWrappedTokenBalance(
+      chainName,
+      true,
+      publicAddress,
+    )) as RailgunDisplayBalance;
+    wrappedReadableAmount.name = wrappedReadableAmount.name.replace(
+      "Wrapped ",
+      "",
+    );
+    return [wrappedReadableAmount, ...balances];
+  }
+
+  return balances;
 };
 
 export const getMaxBalanceLength = (

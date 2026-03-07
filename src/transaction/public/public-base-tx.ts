@@ -26,11 +26,12 @@ export const populatePublicBaseTokenTransaction = async (
 export const populateAndCalculateGasForBaseTokenTransaction = async (
   chainName: NetworkName,
   erc20AmountRecipient: RailgunERC20AmountRecipient,
+  fromAddressOverride?: string,
 ): Promise<PublicTransactionDetails> => {
   const transaction = await populatePublicBaseTokenTransaction(
     erc20AmountRecipient,
   );
-  const fromAddress = getCurrentWalletPublicAddress();
+  const fromAddress = fromAddressOverride ?? getCurrentWalletPublicAddress();
   transaction.from = fromAddress;
 
   const { privateGasEstimate, populatedTransaction } =
