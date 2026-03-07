@@ -24,6 +24,8 @@ import {
   rejectWalletConnectSessionRequest,
   rejectWalletConnectSessionProposal,
 } from "../walletconnect/walletconnect-bridge";
+import { readFileSync, writeFileSync } from "fs";
+import { resolve } from "path";
 import { confirmPrompt, confirmPromptCatch, confirmPromptCatchRetry } from "./confirm-ui";
 import { createLiveSelect } from "./live-select";
 import {
@@ -548,11 +550,11 @@ const buildWalletConnectManagerChoices = () => {
   }
 
   choices.push(
-    {
-      message: ` >> ${"Advanced".grey.bold} <<`,
-      role: "separator",
-    },
-    { name: "mech-test", message: "Test 7702 mech pilot".cyan },
+    // {
+    //   message: ` >> ${"Advanced".grey.bold} <<`,
+    //   role: "separator",
+    // },
+    // { name: "mech-test", message: "Test 7702 mech pilot".cyan },
     { name: "exit-menu", message: "Go Back".grey },
   );
 
@@ -1640,6 +1642,122 @@ const formatCompactTimestamp = (timestamp: number): string => {
     .replace(/\.\d{3}Z$/, "Z");
 };
 
+const normalizeImportedBundledCall = (call: any): WalletConnectBundledCall => {
+  const to = typeof call?.to === "string" ? call.to.trim().toLowerCase() : "";
+  if (!/^0x[0-9a-f]{40}$/.test(to)) {
+    throw new Error("Each bundle call must include a valid 'to' address.");
+  }
+
+  const rawValue = typeof call?.value === "string" ? call.value.trim() : "0x0";
+  const value = /^0x[0-9a-fA-F]+$/.test(rawValue)
+    ? rawValue.toLowerCase()
+    : /^[0-9]+$/.test(rawValue)
+      ? `0x${BigInt(rawValue).toString(16)}`
+      : "0x0";
+
+  const data = typeof call?.data === "string" && /^0x[0-9a-fA-F]*$/.test(call.data.trim())
+    ? call.data.trim().toLowerCase()
+    : "0x";
+
+  const operation = call?.operation === 1 ? 1 : 0;
+  return { to, value, data, operation };
+};
+
+const normalizeImportedCapturedBundle = (
+  input: any,
+): ReturnType<typeof listWalletConnectCapturedBundles>[number] => {
+  const callsSource = Array.isArray(input?.calls) ? input.calls : undefined;
+  if (!callsSource?.length) {
+    throw new Error("Bundle JSON must include a non-empty 'calls' array.");
+  }
+
+  const now = Date.now();
+  const createdAt = typeof input?.createdAt === "number"
+    ? input.createdAt
+    : now;
+  const topic = typeof input?.topic === "string" && input.topic.trim().length
+    ? input.topic.trim()
+    : "imported-bundle";
+  const requestId = Number.isInteger(input?.requestId) ? Number(input.requestId) : now;
+  const method = typeof input?.method === "string" && input.method.trim().length
+    ? input.method.trim()
+    : "wallet_sendCalls";
+
+  return {
+    key: typeof input?.key === "string" && input.key.trim().length
+      ? input.key.trim()
+      : `imported:${requestId}`,
+    topic,
+    requestId,
+    chainId: typeof input?.chainId === "string" ? input.chainId.trim() : undefined,
+    method,
+    calls: callsSource.map(normalizeImportedBundledCall),
+    rawParams: input?.rawParams,
+    createdAt,
+  };
+};
+
+const promptBundleFilePath = async (
+  message: string,
+  initial = "./walletconnect-bundle.json",
+): Promise<Optional<string>> => {
+  const prompt = new Input({
+    header: " ",
+    message,
+    initial,
+  });
+
+  const filePath = (await prompt.run().catch(confirmPromptCatch)) as string | undefined;
+  if (!isDefined(filePath) || !filePath.trim().length) {
+    return undefined;
+  }
+
+  return resolve(filePath.trim());
+};
+
+const exportCapturedBundleToFile = async () => {
+  const selectedBundle = await selectCapturedBundle();
+  if (!isDefined(selectedBundle)) {
+    return;
+  }
+
+  const filePath = await promptBundleFilePath(
+    "Save selected bundle JSON to file",
+    `./walletconnect-bundle-${selectedBundle.requestId}.json`,
+  );
+  if (!isDefined(filePath)) {
+    return;
+  }
+
+  const payload = JSON.stringify(selectedBundle, null, 2);
+  writeFileSync(filePath, `${payload}\n`, "utf8");
+  console.log(`Saved bundle JSON to ${filePath}`.green);
+};
+
+const loadCapturedBundleFromFile = async () => {
+  const filePath = await promptBundleFilePath("Load bundle JSON from file");
+  if (!isDefined(filePath)) {
+    return undefined;
+  }
+
+  const payload = readFileSync(filePath, "utf8");
+  return normalizeImportedCapturedBundle(JSON.parse(payload));
+};
+
+const loadCapturedBundleFromPrompt = async () => {
+  const prompt = new Input({
+    header: " ",
+    message: "Paste bundle JSON",
+  });
+
+  const raw = (await prompt.run().catch(confirmPromptCatch)) as string | undefined;
+  if (!isDefined(raw) || !raw.trim().length) {
+    return undefined;
+  }
+
+  return normalizeImportedCapturedBundle(JSON.parse(raw));
+};
+
 const buildComposedCapturedBundles = (
   bundles: ReturnType<typeof listWalletConnectCapturedBundles>,
 ) => {
@@ -1936,6 +2054,23 @@ const runBuildCrossContract7702FromBundlePrompt = async () => {
   }
 
   await buildAndSendCrossContract7702FromBundle(selectedBundle);
+};
+
+const runBuildCrossContract7702FromImportedBundlePrompt = async (
+  source: "file" | "json",
+) => {
+  try {
+    const selectedBundle = source === "file"
+      ? await loadCapturedBundleFromFile()
+      : await loadCapturedBundleFromPrompt();
+    if (!isDefined(selectedBundle)) {
+      return;
+    }
+
+    await buildAndSendCrossContract7702FromBundle(selectedBundle);
+  } catch (error) {
+    console.log(`Invalid bundle input: ${(error as Error).message}`.yellow);
+  }
 };
 
 const toStringArray = (value: unknown): string[] => {
@@ -2488,6 +2623,9 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
         const bundleChoices: any[] = [
           { name: "bundles", message: `View captured bundles (${summary.capturedBundles})` },
           { name: "build-7702", message: `Build 7702 transaction (${summary.capturedBundles})`.magenta },
+          { name: "build-7702-file", message: "Build 7702 transaction from bundle JSON file".cyan },
+          { name: "build-7702-json", message: "Build 7702 transaction from pasted bundle JSON".cyan },
+          { name: "export-bundle", message: "Export captured bundle to JSON file" },
           { name: "clear-bundles", message: "Clear captured bundles" },
           { name: "exit-menu", message: "Go Back".grey },
         ];
@@ -2506,6 +2644,15 @@ export const runWalletConnectManagerPrompt = async (): Promise<void> => {
             break;
           case "build-7702":
             await runBuildCrossContract7702FromBundlePrompt();
+            break;
+          case "build-7702-file":
+            await runBuildCrossContract7702FromImportedBundlePrompt("file");
+            break;
+          case "build-7702-json":
+            await runBuildCrossContract7702FromImportedBundlePrompt("json");
+            break;
+          case "export-bundle":
+            await exportCapturedBundleToFile();
             break;
           case "clear-bundles": {
             const cleared = clearWalletConnectCapturedBundles();

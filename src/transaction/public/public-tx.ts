@@ -13,7 +13,7 @@ import {
   JsonRpcProvider
 } from "ethers";
 import { ERC20_ABI } from "../../abi";
-import { promiseTimeout, throwError } from "../../util/util";
+import { delay, promiseTimeout, throwError } from "../../util/util";
 import {
   calculatePublicGasFee,
   getPublicGasDetails,
@@ -111,14 +111,19 @@ export const waitForRelayedTx = async (
   txTimeout = 3 * 60 * 1000,
 ) => {
   const provider = getProviderForChain(chainName) as unknown as JsonRpcProvider;
-  let txResponse: TransactionResponse | null = null;
-  try {
-    txResponse = await provider.getTransaction(txHash);
+  const startedAt = Date.now();
+  const pollIntervalMs = 4_000;
 
-    if (txResponse !== null) {
-      const receipt = await waitOnTx(txResponse, txTimeout);
-      return isDefined(receipt) && receipt.status === 1;
+  try {
+    while (Date.now() - startedAt < txTimeout) {
+      const receipt = await provider.getTransactionReceipt(txHash).catch(() => undefined);
+      if (isDefined(receipt)) {
+        return receipt.status === 1;
+      }
+
+      await delay(pollIntervalMs);
     }
+
     return false;
   } catch (err: Error | any) {
     console.log(`Transaction ${txHash} error: ${err.message}`);
