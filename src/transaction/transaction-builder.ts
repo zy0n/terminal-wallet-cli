@@ -46,6 +46,12 @@ import {
   getBroadcasterTranaction,
 } from "./private/private-tx";
 import {
+  getProvedShieldBaseCrossContract7702Transaction,
+  getProvedShieldERC20CrossContract7702Transaction,
+  getShieldBaseCrossContract7702GasEstimate,
+  getShieldERC20CrossContract7702GasEstimate,
+} from "./private/cross-contract-7702";
+import {
   PrivateGasEstimate,
   RailgunTransaction,
 } from "../models/transaction-models";
@@ -184,6 +190,26 @@ type TerminalTransaction = {
 
 const getSelfSignerAddress = (selfSignerWallet?: HDNodeWallet) => {
   return selfSignerWallet?.address ?? getCurrentWalletPublicAddress();
+};
+
+const getBroadcasterShieldSelectionError = (
+  selections: RailgunSelectedAmount[],
+): Optional<string> => {
+  const seenTokenAddresses = new Set<string>();
+
+  for (const selection of selections) {
+    if (selection.amount !== 0n) {
+      return `Broadcaster shielding currently requires full-balance token selections for [${selection.symbol}]. Use the self-signed shield path for partial amounts.`;
+    }
+
+    const normalizedTokenAddress = selection.tokenAddress.toLowerCase();
+    if (seenTokenAddresses.has(normalizedTokenAddress)) {
+      return `Broadcaster shielding currently supports one recipient per token. Duplicate token selection found for [${selection.symbol}].`;
+    }
+    seenTokenAddresses.add(normalizedTokenAddress);
+  }
+
+  return undefined;
 };
 
 const getActiveSendSigner = (
@@ -474,6 +500,8 @@ export const sendBroadcastedTransaction = async (
   encryptionKey?: string,
 ) => {
   const useRelayAdapt =
+    transactionType === RailgunTransaction.Shield ||
+    transactionType === RailgunTransaction.ShieldBase ||
     transactionType === RailgunTransaction.UnshieldBase ||
     transactionType === RailgunTransaction.Private0XSwap;
   const finalTransaction = await getBroadcasterTranaction(
@@ -484,7 +512,7 @@ export const sendBroadcastedTransaction = async (
     },
     chainName,
     useRelayAdapt,
-    provedTransaction.transaction.authorizationList[0]
+    provedTransaction.transaction.authorizationList?.[0]
   );
 
   console.log(
@@ -1310,7 +1338,7 @@ export const runTransactionBuilder = async (
             newRefObj = {
               selections,
               confirmAmountsDisabled: gasEstimate ? true : false,
-              selectFeesDisabled: true,
+              selectFeesDisabled: false,
               privateGasEstimate: gasEstimate,
               generateProofDisabled: gasEstimate ? false : true,
               encryptionKey: password,
@@ -1355,7 +1383,7 @@ export const runTransactionBuilder = async (
             newRefObj = {
               selections,
               confirmAmountsDisabled: gasEstimate ? true : false,
-              selectFeesDisabled: true,
+              selectFeesDisabled: false,
               privateGasEstimate: gasEstimate,
               generateProofDisabled: gasEstimate ? false : true,
               encryptionKey: password,
@@ -1542,7 +1570,8 @@ export const runTransactionBuilder = async (
         }
 
         const use7702Only =
-          // transactionType === RailgunTransaction.ShieldBase ||
+          transactionType === RailgunTransaction.Shield ||
+          transactionType === RailgunTransaction.ShieldBase ||
           transactionType === RailgunTransaction.UnshieldBase ||
           transactionType === RailgunTransaction.Private0XSwap;
 
@@ -1605,6 +1634,54 @@ export const runTransactionBuilder = async (
             );
             break;
           }
+          case RailgunTransaction.Shield: {
+            const shieldSelectionError = getBroadcasterShieldSelectionError(
+              selections,
+            );
+            if (isDefined(_bestBroadcaster)) {
+              if (shieldSelectionError) {
+                throw new Error(shieldSelectionError);
+              }
+
+              const erc20AmountRecipients = getERC20AmountRecipients(selections);
+              _privateGasEstimate =
+                await getShieldERC20CrossContract7702GasEstimate(
+                  chainName,
+                  erc20AmountRecipients,
+                  encryptionKey,
+                  _bestBroadcaster,
+                );
+              break;
+            }
+
+            const erc20AmountRecipients = getERC20AmountRecipients(selections);
+            _privateGasEstimate = await getShieldERC20TransactionGasDetails(
+              chainName,
+              erc20AmountRecipients,
+              selfSignerWallet,
+            );
+            break;
+          }
+          case RailgunTransaction.ShieldBase: {
+            const erc20AmountRecipients = getERC20AmountRecipients(selections);
+            const [wrappedERC20Amount] = erc20AmountRecipients;
+
+            _privateGasEstimate = isDefined(_bestBroadcaster)
+              ? await getShieldBaseCrossContract7702GasEstimate(
+                  chainName,
+                  wrappedERC20Amount,
+                  encryptionKey,
+                  _bestBroadcaster,
+                )
+              : await getShieldBaseTokenGasDetails(
+                  chainName,
+                  wrappedERC20Amount,
+                  getCurrentRailgunID(),
+                  encryptionKey,
+                  selfSignerWallet,
+                );
+            break;
+          }
           case RailgunTransaction.Private0XSwap: {
             _privateGasEstimate = await getZer0XSwapTransactionGasEstimate(
               chainName,
@@ -1650,7 +1727,7 @@ export const runTransactionBuilder = async (
             }
             case RailgunTransaction.UnshieldBase: {
               const erc20AmountRecipients = getERC20AmountRecipients(selections);
-              const wrappedERC20Amount = erc20AmountRecipients[0];
+              const [wrappedERC20Amount] = erc20AmountRecipients;
 
               _privateGasEstimate = await getUnshieldBaseTokenGasEstimate(
                 chainName,
@@ -1658,6 +1735,54 @@ export const runTransactionBuilder = async (
                 encryptionKey,
                 _bestBroadcaster,
               );
+              break;
+            }
+            case RailgunTransaction.Shield: {
+              const shieldSelectionError = getBroadcasterShieldSelectionError(
+                selections,
+              );
+              if (isDefined(_bestBroadcaster)) {
+                if (shieldSelectionError) {
+                  throw new Error(shieldSelectionError);
+                }
+
+                const erc20AmountRecipients = getERC20AmountRecipients(selections);
+                _privateGasEstimate =
+                  await getShieldERC20CrossContract7702GasEstimate(
+                    chainName,
+                    erc20AmountRecipients,
+                    encryptionKey,
+                    _bestBroadcaster,
+                  );
+                break;
+              }
+
+              const erc20AmountRecipients = getERC20AmountRecipients(selections);
+              _privateGasEstimate = await getShieldERC20TransactionGasDetails(
+                chainName,
+                erc20AmountRecipients,
+                selfSignerWallet,
+              );
+              break;
+            }
+            case RailgunTransaction.ShieldBase: {
+              const erc20AmountRecipients = getERC20AmountRecipients(selections);
+              const [wrappedERC20Amount] = erc20AmountRecipients;
+
+              _privateGasEstimate = isDefined(_bestBroadcaster)
+                ? await getShieldBaseCrossContract7702GasEstimate(
+                    chainName,
+                    wrappedERC20Amount,
+                    encryptionKey,
+                    _bestBroadcaster,
+                  )
+                : await getShieldBaseTokenGasDetails(
+                    chainName,
+                    wrappedERC20Amount,
+                    getCurrentRailgunID(),
+                    encryptionKey,
+                    selfSignerWallet,
+                  );
               break;
             }
             case RailgunTransaction.Private0XSwap: {
@@ -1748,12 +1873,19 @@ export const runTransactionBuilder = async (
           }
           case RailgunTransaction.Shield: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
-            _provedTransaction = await getProvedShieldERC20Transaction(
-              chainName,
-              erc20AmountRecipients,
-              privateGasEstimate,
-              selfSignerWallet,
-            );
+            _provedTransaction = isDefined(broadcasterSelection)
+              ? await getProvedShieldERC20CrossContract7702Transaction(
+                  encryptionKey,
+                  chainName,
+                  erc20AmountRecipients,
+                  privateGasEstimate,
+                )
+              : await getProvedShieldERC20Transaction(
+                  chainName,
+                  erc20AmountRecipients,
+                  privateGasEstimate,
+                  selfSignerWallet,
+                );
             break;
           }
           case RailgunTransaction.UnshieldBase: {
@@ -1767,14 +1899,21 @@ export const runTransactionBuilder = async (
           }
           case RailgunTransaction.ShieldBase: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
-            _provedTransaction = await getProvedShieldBaseTokenTransaction(
-              chainName,
-              erc20AmountRecipients[0],
-              privateGasEstimate,
-              getCurrentRailgunID(),
-              encryptionKey,
-              selfSignerWallet,
-            );
+            _provedTransaction = isDefined(broadcasterSelection)
+              ? await getProvedShieldBaseCrossContract7702Transaction(
+                  encryptionKey,
+                  chainName,
+                  erc20AmountRecipients[0],
+                  privateGasEstimate,
+                )
+              : await getProvedShieldBaseTokenTransaction(
+                  chainName,
+                  erc20AmountRecipients[0],
+                  privateGasEstimate,
+                  getCurrentRailgunID(),
+                  encryptionKey,
+                  selfSignerWallet,
+                );
             break;
           }
           case RailgunTransaction.Private0XSwap: {
@@ -1800,7 +1939,7 @@ export const runTransactionBuilder = async (
           : _provedTransaction
           ? true
           : false;
-        const setSelectFeesDisabled = transactionTypeMet ? true : false;
+        const setSelectFeesDisabled = privateGasEstimate ? false : true;
         header = "";
         if (isDefined(swapSelections)) {
           header =

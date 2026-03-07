@@ -98,6 +98,8 @@ export const startWakuClient = async (chainName: NetworkName) => {
   const chain = getChainForName(chainName);
   const peerOverrides = remoteConfig.additionalDirectPeers ?? [];
   broadcasterOptions.additionalDirectPeers = peerOverrides;
+  // @ts-expect-error - useDNSDiscovery is not in the type but is supported by the client
+  broadcasterOptions.useDNSDiscovery = true;
   broadcasterOptions.pubSubTopic = remoteConfig.wakuPubSubTopic;
   pushUILog(`Starting Waku Client on ${chainName} with pubSubTopic ${remoteConfig.wakuPubSubTopic} and ${peerOverrides.length} additional direct peers.`, "log");
   if(isDefined(remoteConfig.trustedFeeSigner)){
