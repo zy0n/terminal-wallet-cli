@@ -25,10 +25,27 @@ export const normalizeStealthSignerScope = (scopeID?: string): string => {
 
 class StealthSignerProvider implements EphemeralSignerProvider {
     currentScope: string = DEFAULT_SCOPE;
+    currentStrategy?: EphemeralWalletDerivationStrategy;
 
     setCurrentScope = (scopeID?: string): string => {
         this.currentScope = normalizeStealthSignerScope(scopeID);
         return this.currentScope;
+    };
+
+    setCurrentStrategy = (
+        strategy?: EphemeralWalletDerivationStrategy,
+    ): EphemeralWalletDerivationStrategy | undefined => {
+        this.currentStrategy = strategy;
+        return this.currentStrategy;
+    };
+
+    configure = (
+        scopeID?: string,
+        strategy?: EphemeralWalletDerivationStrategy,
+    ): StealthSignerProvider => {
+        this.setCurrentScope(scopeID);
+        this.setCurrentStrategy(strategy);
+        return this;
     };
 
     getCurrentScope = (): string => {
@@ -48,6 +65,10 @@ class StealthSignerProvider implements EphemeralSignerProvider {
         chainId: bigint,
         index: number,
     ): HDNodeWallet => {
+        if (this.currentStrategy) {
+            return this.currentStrategy(mnemonic, chainId, index);
+        }
+
         const path = this.getDerivationPath(chainId, index);
         return HDNodeWallet.fromPhrase(mnemonic, undefined, path);
     };
@@ -56,25 +77,22 @@ class StealthSignerProvider implements EphemeralSignerProvider {
         return [id, chainId.toString(10), this.currentScope];
     };
 
-    withDerivationStrategy = (
-        strategy: EphemeralWalletDerivationStrategy,
-    ): EphemeralSignerProvider => {
-        return {
-            deriveWallet: strategy,
-            getDBPath: this.getDBPath,
-        };
-    };
 }
 
 export const stealthSignerProvider = new StealthSignerProvider();
+
+export const configureStealthSignerProvider = (
+    scopeID?: string,
+    strategy?: EphemeralWalletDerivationStrategy,
+): EphemeralSignerProvider => {
+    return stealthSignerProvider.configure(scopeID, strategy);
+};
 
 export const createScopedStealthSignerProvider = (
     strategy: EphemeralWalletDerivationStrategy,
     scopeID?: string,
 ): EphemeralSignerProvider => {
-    const provider = new StealthSignerProvider();
-    provider.setCurrentScope(scopeID);
-    return provider.withDerivationStrategy(strategy);
+    return configureStealthSignerProvider(scopeID, strategy);
 };
 
 export { StealthSignerProvider };

@@ -20,14 +20,13 @@ import { walletManager } from "./wallet-manager";
 import { getCurrentNetwork } from "../engine/engine";
 import { getChainForName } from "../network/network-util";
 import { HDNodeWallet } from "ethers";
-import { createScopedStealthSignerProvider } from "./ephemeral-signer-provider";
+import { configureStealthSignerProvider } from "./ephemeral-signer-provider";
 
 type RailgunWalletWithEphemeralSignerProvider = {
   setEphemeralSignerProvider?: (provider: EphemeralSignerProvider) => void;
   setEphemeralWalletDerivationStrategy?: (
     strategy: EphemeralWalletDerivationStrategy,
   ) => void;
-  setCurrentEphemeralWallet?: (wallet: HDNodeWallet) => Promise<void>;
 };
 
 type EphemeralAccountWithSigner = {
@@ -102,18 +101,18 @@ const applyScopedDerivationStrategy = (
   scopeID?: string,
 ) => {
   const strategy = getScopedDerivationStrategy(scopeID);
-  if (!isDefined(strategy)) {
-    return;
-  }
-
   const railgunWallet = fullWalletForID(walletID);
   if (isDefined(railgunWallet.setEphemeralSignerProvider)) {
     railgunWallet.setEphemeralSignerProvider(
-      createScopedStealthSignerProvider(strategy, scopeID),
+      configureStealthSignerProvider(scopeID, strategy),
     );
+    return;
   }
 
-  if (isDefined(railgunWallet.setEphemeralWalletDerivationStrategy)) {
+  if (
+    isDefined(strategy)
+    && isDefined(railgunWallet.setEphemeralWalletDerivationStrategy)
+  ) {
     railgunWallet.setEphemeralWalletDerivationStrategy(strategy);
     return;
   }
@@ -429,12 +428,6 @@ export const setCurrentEphemeralWalletSession = async (
 
   const currentAccount = await manager.getCurrentAccount(chainId);
   assertEphemeralAccountSigner(currentAccount);
-  const railgunWallet = fullWalletForID(walletID) as RailgunWalletWithEphemeralSignerProvider;
-  if (!isDefined(railgunWallet.setCurrentEphemeralWallet)) {
-    throw new Error("setCurrentEphemeralWallet is not available on current Railgun wallet instance.");
-  }
-
-  await railgunWallet.setCurrentEphemeralWallet(currentAccount.signer);
 
   const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex(chainId);
   cacheEphemeralState(walletID, currentIndex, currentAccount.address);

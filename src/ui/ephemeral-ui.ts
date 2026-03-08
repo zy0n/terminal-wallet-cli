@@ -109,6 +109,7 @@ const runTransactionBuilderSafely = async (
     selections: unknown[];
     confirmAmountsDisabled?: boolean;
     selfSignerWallet?: HDNodeWallet;
+    force7702Unshield?: boolean;
   },
 ) => {
   try {
@@ -120,6 +121,31 @@ const runTransactionBuilderSafely = async (
     console.log(`Transaction flow failed: ${(error as Error).message}`.yellow);
     await confirmPromptCatchRetry("");
   }
+};
+
+const promptERC20FundingRoute = async (): Promise<
+  Optional<"standard" | "7702">
+> => {
+  const prompt = new Select({
+    header: " ",
+    message: "ERC20 funding route",
+    choices: [
+      { name: "standard", message: "Standard unshield ERC20" },
+      {
+        name: "7702",
+        message: "7702 unshield ERC20 (broadcaster / type-4 authorization)",
+      },
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return undefined;
+  }
+
+  return selection as "standard" | "7702";
 };
 
 const getProfileScopeID = (profile: {
@@ -557,9 +583,15 @@ const runFundUnshieldERC20ForActiveProfile = async () => {
     return;
   }
 
+  const fundingRoute = await promptERC20FundingRoute();
+  if (!isDefined(fundingRoute)) {
+    return;
+  }
+
   await runTransactionBuilderSafely(chainName, RailgunTransaction.Unshield, {
     selections: amountSelections,
     confirmAmountsDisabled: false,
+    force7702Unshield: fundingRoute === "7702",
   });
 };
 

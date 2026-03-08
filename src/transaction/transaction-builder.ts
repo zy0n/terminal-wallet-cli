@@ -46,10 +46,12 @@ import {
   getBroadcasterTranaction,
 } from "./private/private-tx";
 import {
+  getProvedUnshieldERC20CrossContract7702Transaction,
   getProvedShieldBaseCrossContract7702Transaction,
   getProvedShieldERC20CrossContract7702Transaction,
   getShieldBaseCrossContract7702GasEstimate,
   getShieldERC20CrossContract7702GasEstimate,
+  getUnshieldERC20CrossContract7702GasEstimate,
 } from "./private/cross-contract-7702";
 import {
   PrivateGasEstimate,
@@ -185,7 +187,8 @@ type TerminalTransaction = {
   provedTransaction?: any | undefined,
   selfSignerInfo?: any | undefined,
   selfSignerWallet?: HDNodeWallet | undefined,
-  privateMemo?: any | undefined
+  privateMemo?: any | undefined,
+  force7702Unshield?: boolean | undefined,
 };
 
 const BROADCAST_SUBMISSION_TIMEOUT_MS = 45_000;
@@ -502,6 +505,8 @@ export const sendBroadcastedTransaction = async (
   encryptionKey?: string,
 ) => {
   const useRelayAdapt =
+    (transactionType === RailgunTransaction.Unshield
+      && isDefined(provedTransaction?.transaction?.authorizationList?.length)) ||
     transactionType === RailgunTransaction.Shield ||
     transactionType === RailgunTransaction.ShieldBase ||
     transactionType === RailgunTransaction.UnshieldBase ||
@@ -637,7 +642,8 @@ export const runTransactionBuilder = async (
     provedTransaction,
     selfSignerInfo,
     selfSignerWallet,
-    privateMemo
+    privateMemo,
+    force7702Unshield,
   } = resultObj ?? {
     confirmAmountsDisabled: undefined,
     selectFeesDisabled: undefined,
@@ -652,11 +658,16 @@ export const runTransactionBuilder = async (
     provedTransaction: undefined,
     selfSignerInfo: undefined,
     selfSignerWallet: undefined,
-    privateMemo: undefined
+    privateMemo: undefined,
+    force7702Unshield: undefined,
   };
   if (!isDefined(resultObj)) {
     clearConsoleBuffer();
   }
+  const withBuilderFlags = <T extends object>(state: T) => ({
+    ...state,
+    force7702Unshield,
+  });
   const choices: SelectChoice[] = [];
 
   if (confirmAmountsDisabled === false) {
@@ -1246,13 +1257,13 @@ export const runTransactionBuilder = async (
               header = (await getDisplayTransactions(swapSelection)) ?? "";
             }
             const newSwapSelection = swapSelection ?? swapSelections;
-            return runTransactionBuilder(chainName, transactionType, {
+            return runTransactionBuilder(chainName, transactionType, withBuilderFlags({
               swapSelections: swapSelection ?? swapSelections,
               confirmAmountsDisabled: newSwapSelection ? false : true,
               selectFeesDisabled: true,
               incomingHeader: header !== "" ? header : incomingHeader,
               privateMemo
-            });
+            }));
           }
           let foundSelections;
           if (isDefined(selection)) {
@@ -1267,14 +1278,14 @@ export const runTransactionBuilder = async (
             header = await getDisplayTransactions(finalSelections);
           }
 
-          return runTransactionBuilder(chainName, transactionType, {
+          return runTransactionBuilder(chainName, transactionType, withBuilderFlags({
             selections: finalSelections,
             confirmAmountsDisabled: finalSelections ? false : true,
             selectFeesDisabled: true,
             encryptionKey,
             incomingHeader: header !== "" ? header : incomingHeader,
             privateMemo
-          });
+          }));
         }
       }
     }
@@ -1294,7 +1305,7 @@ export const runTransactionBuilder = async (
         return runTransactionBuilder(
           chainName,
           transactionType,
-          nonConfirmedObj,
+          withBuilderFlags(nonConfirmedObj),
         );
       }
       let newRefObj = resultObj;
@@ -1566,7 +1577,11 @@ export const runTransactionBuilder = async (
         const error = err as Error;
         console.log("We had an error", error.message);
       } finally {
-        return runTransactionBuilder(chainName, transactionType, newRefObj);
+        return runTransactionBuilder(
+          chainName,
+          transactionType,
+          withBuilderFlags(newRefObj ?? {}),
+        );
       }
     }
     case "select-fee": {
@@ -1574,6 +1589,7 @@ export const runTransactionBuilder = async (
       let _bestBroadcaster;
       let _selfSignerInfo;
       let _privateGasEstimate;
+      let shouldClearForced7702State = false;
       try {
         let amountRecipients: RailgunERC20AmountRecipient[] = [];
 
@@ -1593,6 +1609,7 @@ export const runTransactionBuilder = async (
         }
 
         const use7702Only =
+          force7702Unshield ||
           transactionType === RailgunTransaction.Shield ||
           transactionType === RailgunTransaction.ShieldBase ||
           transactionType === RailgunTransaction.UnshieldBase ||
@@ -1616,8 +1633,10 @@ export const runTransactionBuilder = async (
           }
         });
         _bestBroadcaster = _broadcasterSelection?.bestBroadcaster;
-        if (!_bestBroadcaster) {
+        if (!_bestBroadcaster && !force7702Unshield) {
           _selfSignerInfo = await getSelfSignerWalletPrompt();
+        } else if (!_bestBroadcaster && force7702Unshield) {
+          shouldClearForced7702State = true;
         }
 
         // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check
@@ -1635,12 +1654,21 @@ export const runTransactionBuilder = async (
           }
           case RailgunTransaction.Unshield: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
-            _privateGasEstimate = await getUnshieldERC20TransactionGasEstimate(
-              chainName,
-              erc20AmountRecipients,
-              encryptionKey,
-              _bestBroadcaster,
-            );
+            _privateGasEstimate = force7702Unshield
+              ? isDefined(_bestBroadcaster)
+                ? await getUnshieldERC20CrossContract7702GasEstimate(
+                    chainName,
+                    erc20AmountRecipients,
+                    encryptionKey,
+                    _bestBroadcaster,
+                  )
+                : undefined
+              : await getUnshieldERC20TransactionGasEstimate(
+                  chainName,
+                  erc20AmountRecipients,
+                  encryptionKey,
+                  _bestBroadcaster,
+                );
             break;
           }
           case RailgunTransaction.UnshieldBase: {
@@ -1740,12 +1768,21 @@ export const runTransactionBuilder = async (
             }
             case RailgunTransaction.Unshield: {
               const erc20AmountRecipients = getERC20AmountRecipients(selections);
-              _privateGasEstimate = await getUnshieldERC20TransactionGasEstimate(
-                chainName,
-                erc20AmountRecipients,
-                encryptionKey,
-                _bestBroadcaster,
-              );
+              _privateGasEstimate = force7702Unshield
+                ? isDefined(_bestBroadcaster)
+                  ? await getUnshieldERC20CrossContract7702GasEstimate(
+                      chainName,
+                      erc20AmountRecipients,
+                      encryptionKey,
+                      _bestBroadcaster,
+                    )
+                  : undefined
+                : await getUnshieldERC20TransactionGasEstimate(
+                    chainName,
+                    erc20AmountRecipients,
+                    encryptionKey,
+                    _bestBroadcaster,
+                  );
               break;
             }
             case RailgunTransaction.UnshieldBase: {
@@ -1838,7 +1875,7 @@ export const runTransactionBuilder = async (
           );
         }
         if (_bestBroadcaster) {
-          return runTransactionBuilder(chainName, transactionType, {
+          return runTransactionBuilder(chainName, transactionType, withBuilderFlags({
             selections,
             swapSelections,
             confirmAmountsDisabled: true,
@@ -1849,12 +1886,15 @@ export const runTransactionBuilder = async (
             privateGasEstimate: _privateGasEstimate,
             generateProofDisabled: _privateGasEstimate ? false : true,
             privateMemo
-          });
+          }));
         } else {
-          const newPrivateGasEstimate =
-            _privateGasEstimate ?? privateGasEstimate;
-          const newSelfSignerInfo = _selfSignerInfo ?? selfSignerInfo;
-          return runTransactionBuilder(chainName, transactionType, {
+          const newPrivateGasEstimate = shouldClearForced7702State
+            ? undefined
+            : _privateGasEstimate ?? privateGasEstimate;
+          const newSelfSignerInfo = shouldClearForced7702State
+            ? undefined
+            : _selfSignerInfo ?? selfSignerInfo;
+          return runTransactionBuilder(chainName, transactionType, withBuilderFlags({
             selections,
             swapSelections,
             confirmAmountsDisabled: true,
@@ -1865,7 +1905,7 @@ export const runTransactionBuilder = async (
             generateProofDisabled: newPrivateGasEstimate ? false : true,
             selfSignerInfo: newSelfSignerInfo,
             privateMemo
-          });
+          }));
         }
       }
     }
@@ -1887,11 +1927,24 @@ export const runTransactionBuilder = async (
           }
           case RailgunTransaction.Unshield: {
             const erc20AmountRecipients = getERC20AmountRecipients(selections);
-            _provedTransaction = await getProvedUnshieldERC20Transaction(
-              encryptionKey,
-              erc20AmountRecipients,
-              privateGasEstimate,
-            );
+            _provedTransaction = force7702Unshield
+              ? isDefined(broadcasterSelection)
+                ? await getProvedUnshieldERC20CrossContract7702Transaction(
+                    encryptionKey,
+                    chainName,
+                    erc20AmountRecipients,
+                    privateGasEstimate,
+                  )
+                : (() => {
+                    throw new Error(
+                      "7702 ERC20 unshield requires selecting a 7702 broadcaster first.",
+                    );
+                  })()
+              : await getProvedUnshieldERC20Transaction(
+                  encryptionKey,
+                  erc20AmountRecipients,
+                  privateGasEstimate,
+                );
             break;
           }
           case RailgunTransaction.Shield: {
@@ -1978,7 +2031,7 @@ export const runTransactionBuilder = async (
             privateGasEstimate,
           );
         }
-        return runTransactionBuilder(chainName, transactionType, {
+        return runTransactionBuilder(chainName, transactionType, withBuilderFlags({
           selections,
           swapSelections,
           confirmAmountsDisabled: setConfirmAmountsDisabled,
@@ -1993,7 +2046,7 @@ export const runTransactionBuilder = async (
           selfSignerInfo,
           selfSignerWallet,
           privateMemo
-        });
+        }));
       }
 
       break;
@@ -2032,7 +2085,7 @@ export const runTransactionBuilder = async (
           console.log(errResponseMessage);
           await confirmPromptCatchRetry("");
 
-          return runTransactionBuilder(chainName, transactionType, {
+          return runTransactionBuilder(chainName, transactionType, withBuilderFlags({
             selections,
             swapSelections,
             confirmAmountsDisabled: true,
@@ -2047,7 +2100,7 @@ export const runTransactionBuilder = async (
             selfSignerWallet,
             // provedTransaction,
             privateMemo
-          });
+          }));
         }
       }
       break;

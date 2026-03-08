@@ -35,6 +35,7 @@ import {
 
 const DEFAULT_MIN_GAS_LIMIT_7702 = 5_000_000n;
 const WRAPPED_BASE_TOKEN_ABI = ["function deposit() payable"];
+const ERC20_BALANCE_OF_ABI = ["function balanceOf(address owner) view returns (uint256)"];
 
 const toCrossContractCall = (
   bundledCall: WalletConnectBundledCall,
@@ -280,6 +281,66 @@ const getShieldERC20ApproveCalls = (
     ]),
     value: 0n,
   }));
+};
+
+const getUnshieldERC20NoopCalls = (
+  erc20AmountRecipients: RailgunERC20AmountRecipient[],
+): ContractTransaction[] => {
+  const erc20Interface = new Interface(ERC20_BALANCE_OF_ABI);
+
+  return erc20AmountRecipients.map(({ tokenAddress, recipientAddress }) => ({
+    to: tokenAddress,
+    data: erc20Interface.encodeFunctionData("balanceOf", [recipientAddress]),
+    value: 0n,
+  }));
+};
+
+const getRelayAdaptUnshieldERC20Amounts = (
+  erc20AmountRecipients: RailgunERC20AmountRecipient[],
+): RailgunERC20Amount[] => {
+  return erc20AmountRecipients.map(({ tokenAddress, amount }) => ({
+    tokenAddress,
+    amount,
+  }));
+};
+
+export const getUnshieldERC20CrossContract7702GasEstimate = async (
+  chainName: NetworkName,
+  erc20AmountRecipients: RailgunERC20AmountRecipient[],
+  encryptionKey: string,
+  broadcasterSelection?: SelectedBroadcaster,
+): Promise<PrivateGasEstimate | undefined> => {
+  const crossContractCalls = getUnshieldERC20NoopCalls(erc20AmountRecipients);
+  const relayAdaptUnshieldERC20Amounts = getRelayAdaptUnshieldERC20Amounts(
+    erc20AmountRecipients,
+  );
+
+  return getCrossContract7702GasEstimateForCalls(
+    chainName,
+    crossContractCalls,
+    encryptionKey,
+    broadcasterSelection,
+    relayAdaptUnshieldERC20Amounts,
+  );
+};
+
+export const getProvedUnshieldERC20CrossContract7702Transaction = async (
+  encryptionKey: string,
+  chainName: NetworkName,
+  erc20AmountRecipients: RailgunERC20AmountRecipient[],
+  privateGasEstimate: PrivateGasEstimate,
+): Promise<Optional<RailgunPopulateTransactionResponse>> => {
+  const crossContractCalls = getUnshieldERC20NoopCalls(erc20AmountRecipients);
+  const relayAdaptUnshieldERC20Amounts = getRelayAdaptUnshieldERC20Amounts(
+    erc20AmountRecipients,
+  );
+
+  return getProvedCrossContract7702TransactionForCalls(
+    encryptionKey,
+    crossContractCalls,
+    privateGasEstimate,
+    relayAdaptUnshieldERC20Amounts,
+  );
 };
 
 export const getShieldERC20CrossContract7702GasEstimate = async (
