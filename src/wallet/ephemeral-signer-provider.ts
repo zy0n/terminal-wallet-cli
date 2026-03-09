@@ -2,10 +2,13 @@ import {
     EphemeralSignerProvider,
     EphemeralWalletDerivationStrategy,
 } from "@railgun-community/engine";
+import { createHash } from "crypto";
 import { HDNodeWallet } from "ethers";
 
 const DEFAULT_SCOPE = "0";
 const MAX_SCOPE_ID_LENGTH = 128;
+const MAX_BIP32_HARDENED_INDEX = 0x7fffffff;
+const SLOT_SCOPE_REGEX = /^slot-(\d+)$/;
 
 export const normalizeStealthSignerScope = (scopeID?: string): string => {
     if (typeof scopeID !== "string") {
@@ -21,6 +24,31 @@ export const normalizeStealthSignerScope = (scopeID?: string): string => {
     }
 
     return normalized;
+};
+
+const toBip32ScopeComponent = (scopeID?: string): string => {
+    const normalized = normalizeStealthSignerScope(scopeID);
+
+    if (/^\d+$/.test(normalized)) {
+        const parsed = Number(normalized);
+        if (!Number.isSafeInteger(parsed) || parsed > MAX_BIP32_HARDENED_INDEX) {
+            throw new Error("Ephemeral numeric scope exceeds BIP32 hardened index range.");
+        }
+        return normalized;
+    }
+
+    const slotMatch = normalized.match(SLOT_SCOPE_REGEX);
+    if (slotMatch) {
+        const parsed = Number(slotMatch[1]);
+        if (!Number.isSafeInteger(parsed) || parsed > MAX_BIP32_HARDENED_INDEX) {
+            throw new Error("Ephemeral slot scope exceeds BIP32 hardened index range.");
+        }
+        return parsed.toString(10);
+    }
+
+    const digest = createHash("sha256").update(normalized, "utf8").digest();
+    const scopedIndex = digest.readUInt32BE(0) & MAX_BIP32_HARDENED_INDEX;
+    return scopedIndex.toString(10);
 };
 
 class StealthSignerProvider implements EphemeralSignerProvider {
@@ -57,7 +85,9 @@ class StealthSignerProvider implements EphemeralSignerProvider {
             throw new Error("Ephemeral index must be a non-negative integer.");
         }
 
-        return `m/44'/60'/0'/7702'/${chainId}'/${this.currentScope}'/${index}'`;
+        const scopeComponent = toBip32ScopeComponent(this.currentScope);
+
+        return `m/44'/60'/0'/7702'/${chainId}'/${scopeComponent}'/${index}'`;
     };
 
     deriveWallet = (

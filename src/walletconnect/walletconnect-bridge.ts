@@ -1167,6 +1167,51 @@ const getWalletSendCallsStatusResult = async (id: string) => {
   };
 };
 
+export const createWalletSendCallsApprovalResult = (
+  params: unknown,
+  transactionHashes: string[],
+) => {
+  if (!transactionHashes.length) {
+    throw walletCallInvalidParams("wallet_sendCalls requires at least one transaction hash.");
+  }
+
+  const {
+    chainIdValue,
+    requestVersion,
+    requestID,
+    atomicRequired,
+  } = parseWalletSendCallsInput(params);
+
+  if (atomicRequired !== true) {
+    throw new Error("wallet_sendCalls requires atomicRequired=true for this wallet.");
+  }
+
+  const id = requestID ?? createWalletSendCallsID();
+  if (isDefined(walletSendCallsStatusByID[id])) {
+    throw walletCallDuplicateID(`Duplicate wallet_sendCalls id: ${id}`);
+  }
+
+  walletSendCallsStatusByID[id] = {
+    id,
+    chainId: chainIdValue,
+    status: 100,
+    atomic: true,
+    version: requestVersion,
+    transactionHashes: [...transactionHashes],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  return {
+    id,
+    capabilities: {
+      caip345: {
+        transactionHashes: [...transactionHashes],
+      },
+    },
+  };
+};
+
 const shouldAutoApproveRequestMethod = (method: string) => {
   return [
     "wallet_getCapabilities",

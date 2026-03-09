@@ -11,6 +11,7 @@ import { Interface } from "ethers";
 import {
   approveWalletConnectSessionRequest,
   approveWalletConnectSessionProposal,
+  createWalletSendCallsApprovalResult,
   setWalletConnectSignerOverrideForTopic,
   clearWalletConnectCapturedBundles,
   disconnectWalletConnectSession,
@@ -781,6 +782,18 @@ const getSigningContextForRequest = (
   };
 };
 
+const getApprovedResultOverrideForExecutionMethod = (
+  method: string,
+  params: unknown,
+  txHash: string,
+) => {
+  if (method === "wallet_sendCalls") {
+    return createWalletSendCallsApprovalResult(params, [txHash]);
+  }
+
+  return txHash;
+};
+
 const getCapturedBundleForRequest = (requestID: number, topic: string) => {
   return listWalletConnectCapturedBundles().find((bundle) => {
     return bundle.requestId === requestID && bundle.topic === topic;
@@ -1503,7 +1516,11 @@ const runApproveRequestPrompt = async () => {
         }
 
         const approved = await approveWalletConnectSessionRequest(selected.id, {
-          approvedResultOverride: txHash,
+          approvedResultOverride: getApprovedResultOverrideForExecutionMethod(
+            selected.method,
+            selected.params,
+            txHash,
+          ),
         });
         console.log(
           `Approved request #${approved.id} (${approved.method}) via 7702 broadcaster on topic ${approved.topic}.`.green,
@@ -1554,7 +1571,11 @@ const runApproveRequestPrompt = async () => {
       }
 
       const approved = await approveWalletConnectSessionRequest(selected.id, {
-        approvedResultOverride: txHash,
+        approvedResultOverride: getApprovedResultOverrideForExecutionMethod(
+          selected.method,
+          selected.params,
+          txHash,
+        ),
       });
       console.log(
         `Approved request #${approved.id} (${approved.method}) via 7702 broadcaster on topic ${approved.topic}.`.green,
