@@ -275,6 +275,7 @@ type WalletSendCallsStatusEntry = {
 };
 
 const walletSendCallsStatusByID: MapType<WalletSendCallsStatusEntry> = {};
+const REQUIRED_SEND_CALLS_CONFIRMATIONS = 1;
 
 let walletConnectSdkLoader: Promise<any> | undefined = undefined;
 
@@ -1092,6 +1093,77 @@ const parseWalletGetCallsStatusInput = (params: unknown) => {
   return id.trim();
 };
 
+const formatWalletSendCallsReceipt = (receipt: any): WalletSendCallsStatusReceipt => {
+  return {
+    logs: receipt.logs.map((log: any) => ({
+      address: log.address,
+      data: log.data,
+      topics: [...log.topics],
+    })),
+    status: toRpcHex(receipt.status ?? 0),
+    blockHash: receipt.blockHash,
+    blockNumber: toRpcHex(receipt.blockNumber),
+    gasUsed: toRpcHex(receipt.gasUsed),
+    transactionHash: receipt.hash,
+  };
+};
+
+const updateWalletSendCallsStatusFromReceipts = (
+  entry: WalletSendCallsStatusEntry,
+  receipts: any[],
+) => {
+  const minedReceipts = receipts.filter((receipt) => {
+    return isDefined(receipt);
+  }) as any[];
+
+  if (!minedReceipts.length) {
+    return entry;
+  }
+
+  const formattedReceipts = minedReceipts.map(formatWalletSendCallsReceipt);
+  const hasFailure = minedReceipts.some((receipt) => (receipt.status ?? 0) !== 1);
+  const allMined = minedReceipts.length === entry.transactionHashes.length;
+
+  walletSendCallsStatusByID[entry.id] = {
+    ...entry,
+    receipts: formattedReceipts,
+    status: allMined
+      ? hasFailure
+        ? (entry.atomic ? 500 : 600)
+        : 200
+      : 100,
+    updatedAt: Date.now(),
+  };
+
+  return walletSendCallsStatusByID[entry.id];
+};
+
+const watchWalletSendCallsStatusEntry = (
+  id: string,
+  transactionHashes: string[],
+) => {
+  const provider = getProviderForChain(getCurrentNetwork()) as any;
+
+  void Promise.all(
+    transactionHashes.map((hash) => {
+      return provider
+        .waitForTransaction(hash, REQUIRED_SEND_CALLS_CONFIRMATIONS)
+        .catch(() => undefined);
+    }),
+  )
+    .then((receipts) => {
+      const entry = walletSendCallsStatusByID[id];
+      if (!isDefined(entry)) {
+        return;
+      }
+
+      updateWalletSendCallsStatusFromReceipts(entry, receipts);
+    })
+    .catch(() => {
+      // Keep the batch pending until polling or later receipt checks prove final state.
+    });
+};
+
 const refreshWalletSendCallsStatusEntry = async (id: string) => {
   const entry = walletSendCallsStatusByID[id];
   if (!isDefined(entry)) {
@@ -1109,44 +1181,7 @@ const refreshWalletSendCallsStatusEntry = async (id: string) => {
     }),
   );
 
-  const minedReceipts = receipts.filter((receipt) => {
-    return isDefined(receipt);
-  }) as NonNullable<(typeof receipts)[number]>[];
-
-  if (!minedReceipts.length) {
-    return entry;
-  }
-
-  const formattedReceipts = minedReceipts.map((receipt) => {
-    return {
-      logs: receipt.logs.map((log: any) => ({
-        address: log.address,
-        data: log.data,
-        topics: [...log.topics],
-      })),
-      status: toRpcHex(receipt.status ?? 0),
-      blockHash: receipt.blockHash,
-      blockNumber: toRpcHex(receipt.blockNumber),
-      gasUsed: toRpcHex(receipt.gasUsed),
-      transactionHash: receipt.hash,
-    };
-  });
-
-  const hasFailure = minedReceipts.some((receipt) => (receipt.status ?? 0) !== 1);
-  const allMined = minedReceipts.length === entry.transactionHashes.length;
-
-  walletSendCallsStatusByID[id] = {
-    ...entry,
-    receipts: formattedReceipts,
-    status: allMined
-      ? hasFailure
-        ? (entry.atomic ? 500 : 600)
-        : 200
-      : 100,
-    updatedAt: Date.now(),
-  };
-
-  return walletSendCallsStatusByID[id];
+  return updateWalletSendCallsStatusFromReceipts(entry, receipts);
 };
 
 const getWalletSendCallsStatusResult = async (id: string) => {
@@ -1523,45 +1558,7 @@ const buildManualApprovedRequestResult = async (
       updatedAt: Date.now(),
     };
 
-    void Promise.all(
-      txResponses.map((tx) => {
-        return tx.wait().catch(() => undefined);
-      }),
-    )
-      .then((receipts) => {
-        const successfulReceipts = receipts.filter((receipt) => {
-          return isDefined(receipt);
-        }) as NonNullable<(typeof receipts)[number]>[];
-        const formattedReceipts = successfulReceipts.map((receipt) => {
-          return {
-            logs: receipt.logs.map((log: any) => ({
-              address: log.address,
-              data: log.data,
-              topics: [...log.topics],
-            })),
-            status: toRpcHex(receipt.status ?? 0),
-            blockHash: receipt.blockHash,
-            blockNumber: toRpcHex(receipt.blockNumber),
-            gasUsed: toRpcHex(receipt.gasUsed),
-            transactionHash: receipt.hash,
-          };
-        });
-
-        const hasFailure = successfulReceipts.some((receipt) => receipt.status !== 1);
-        walletSendCallsStatusByID[id] = {
-          ...walletSendCallsStatusByID[id],
-          receipts: formattedReceipts,
-          status: hasFailure ? 500 : 200,
-          updatedAt: Date.now(),
-        };
-      })
-      .catch(() => {
-        walletSendCallsStatusByID[id] = {
-          ...walletSendCallsStatusByID[id],
-          status: 500,
-          updatedAt: Date.now(),
-        };
-      });
+    watchWalletSendCallsStatusEntry(id, transactionHashes);
 
     return {
       id,
