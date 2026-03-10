@@ -36,6 +36,7 @@ type EphemeralAccountWithSigner = {
 
 const lower = (value: string) => value.toLowerCase();
 const CHAIN_SCOPED_SCOPE_REGEX = /^chain-\d+:(.+)$/;
+const DEFAULT_ACTIVE_SCOPE_ID = "0";
 
 const scopedEphemeralDerivationStrategies: MapType<EphemeralWalletDerivationStrategy> = {};
 const MAX_SCOPE_ID_LENGTH = 128;
@@ -62,6 +63,14 @@ const normalizeScopeID = (scopeID?: string) => {
   }
 
   return normalized;
+};
+
+export const getDefaultActiveStealthScopeID = () => {
+  return DEFAULT_ACTIVE_SCOPE_ID;
+};
+
+export const normalizeActiveStealthScopeID = (scopeID?: string) => {
+  return normalizeScopeID(scopeID) ?? DEFAULT_ACTIVE_SCOPE_ID;
 };
 
 const getEphemeralWalletMap = () => {
@@ -306,6 +315,52 @@ export const listEphemeralSessionScopes = () => {
   return Object.values(scopeMap).sort((left, right) => {
     return right.updatedAt - left.updatedAt;
   });
+};
+
+export const listKnownEphemeralSessionScopeIDs = () => {
+  const scopeIDs = new Set<string>([DEFAULT_ACTIVE_SCOPE_ID]);
+
+  for (const scope of listEphemeralSessionScopes()) {
+    scopeIDs.add(scope.scopeID);
+  }
+
+  return [...scopeIDs.values()].sort((left, right) => {
+    const leftNumeric = Number(left);
+    const rightNumeric = Number(right);
+    const leftIsNumeric = /^\d+$/.test(left);
+    const rightIsNumeric = /^\d+$/.test(right);
+
+    if (leftIsNumeric && rightIsNumeric) {
+      return leftNumeric - rightNumeric;
+    }
+
+    if (leftIsNumeric) {
+      return -1;
+    }
+
+    if (rightIsNumeric) {
+      return 1;
+    }
+
+    return left.localeCompare(right);
+  });
+};
+
+export const getActiveEphemeralSessionScopeID = () => {
+  return normalizeActiveStealthScopeID(walletManager.keyChain.activeStealthScopeID);
+};
+
+export const setActiveEphemeralSessionScopeID = (scopeID?: string) => {
+  const normalizedScopeID = normalizeActiveStealthScopeID(scopeID);
+  walletManager.keyChain.activeStealthScopeID = normalizedScopeID;
+
+  if (!isDefined(getEphemeralSessionScope(normalizedScopeID))) {
+    upsertEphemeralSessionScope(normalizedScopeID);
+  } else {
+    persistKeychain();
+  }
+
+  return normalizedScopeID;
 };
 
 export const removeEphemeralSessionScope = (scopeID: string) => {

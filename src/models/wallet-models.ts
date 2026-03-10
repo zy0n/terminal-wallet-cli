@@ -132,6 +132,7 @@ export type KeychainFile = {
   walletConnectCapturedBundles?: MapType<WalletConnectCapturedBundle>;
   stealthProfiles?: MapType<StealthProfile>;
   activeStealthProfileID?: string;
+  activeStealthScopeID?: string;
   showSenderAddress?: boolean;
 };
 

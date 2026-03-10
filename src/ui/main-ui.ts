@@ -333,7 +333,7 @@ const runWalletToolsPrompt = async (chainName: NetworkName) => {
     choices: [
       { name: "add-wallet", message: "Add Wallet" },
       { name: "poi-tools", message: "POI Tools" },
-      { name: "ephemeral-wallet-tools", message: "Stealth Account Manager" },
+      { name: "ephemeral-wallet-tools", message: "Stealth App Manager" },
       { name: "walletconnect-tools", message: "WalletConnect Tools" },
       {
         name: "show-sender-address",
@@ -872,7 +872,7 @@ const getMainPrompt = (networkName: NetworkName, baseSymbol: string) => {
       },
       {
         name: "stealth-account-manager",
-        message: "Stealth Account Manager",
+        message: "Stealth App Manager",
       },
       {
         name: "stealth-fund",

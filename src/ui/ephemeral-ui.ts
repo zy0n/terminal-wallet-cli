@@ -1,14 +1,19 @@
 import { isDefined } from "@railgun-community/shared-models";
 import {
   activateScopedEphemeralWalletDerivationStrategy,
+  getActiveEphemeralSessionScopeID,
   getCurrentKnownEphemeralState,
+  getDefaultActiveStealthScopeID,
+  getEphemeralSessionScope,
   hasScopedEphemeralWalletDerivationStrategy,
   getKnownEphemeralAddresses,
   getKnownEphemeralIndexForAddress,
   listEphemeralSessionScopes,
+  listKnownEphemeralSessionScopeIDs,
   listScopedEphemeralWalletDerivationStrategyScopeIDs,
   manualRatchetEphemeralWallet,
   removeEphemeralSessionScope,
+  setActiveEphemeralSessionScopeID,
   setEphemeralSessionRatchetPolicy,
   setCurrentEphemeralWalletSession,
   setEphemeralWalletIndex,
@@ -59,6 +64,15 @@ type ScopeSelection = {
   scopeID?: string;
 };
 
+type StealthScopeAddressEntry = {
+  key: string;
+  address: string;
+  profileID?: string;
+  profileName?: string;
+  knownIndex?: number;
+  source: "known" | "session" | "profile";
+};
+
 const getCurrentChainScopedScopeID = (scopeID?: string): Optional<string> => {
   if (!isDefined(scopeID)) {
     return undefined;
@@ -79,6 +93,39 @@ const shortAddress = (address?: string) => {
     return "unknown";
   }
   return `${address.slice(0, 8)}...${address.slice(-6)}`;
+};
+
+const sortScopeIDs = (scopeIDs: string[]) => {
+  return [...scopeIDs].sort((left, right) => {
+    const leftIsNumeric = /^\d+$/.test(left);
+    const rightIsNumeric = /^\d+$/.test(right);
+
+    if (leftIsNumeric && rightIsNumeric) {
+      return Number(left) - Number(right);
+    }
+
+    if (leftIsNumeric) {
+      return -1;
+    }
+
+    if (rightIsNumeric) {
+      return 1;
+    }
+
+    return left.localeCompare(right);
+  });
+};
+
+const formatScopeName = (scopeID: string) => {
+  if (scopeID === getDefaultActiveStealthScopeID()) {
+    return `Internal Scope ${scopeID}`;
+  }
+
+  if (/^\d+$/.test(scopeID)) {
+    return `User Scope ${scopeID}`;
+  }
+
+  return `Scope ${scopeID}`;
 };
 
 const formatPublicBalanceSummary = async (address?: string) => {
@@ -178,6 +225,120 @@ const getProfileScopeID = (profile: {
     return getCurrentChainScopedScopeID(slotToScopeID(profile.slot));
   }
   return undefined;
+};
+
+const collectStealthAppScopeIDs = () => {
+  const scopeIDs = new Set<string>([
+    getDefaultActiveStealthScopeID(),
+    getActiveEphemeralSessionScopeID(),
+    ...listKnownEphemeralSessionScopeIDs(),
+  ]);
+
+  for (const profile of listStealthProfiles()) {
+    const preferredScopeID = getProfileScopeID(profile);
+    if (isDefined(preferredScopeID)) {
+      scopeIDs.add(preferredScopeID);
+    }
+
+    if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
+      scopeIDs.add(profile.scopeID.trim());
+    }
+  }
+
+  return sortScopeIDs([...scopeIDs.values()]);
+};
+
+const getProfilesForScope = (scopeID: string) => {
+  return listStealthProfiles().filter((profile) => {
+    return getStealthSignerScopeCandidatesForProfile(profile).includes(scopeID);
+  });
+};
+
+const getKnownAddressesForScope = (scopeID: string): StealthScopeAddressEntry[] => {
+  const entries = new Map<string, StealthScopeAddressEntry>();
+  const addEntry = (entry: StealthScopeAddressEntry) => {
+    const key = entry.address.toLowerCase();
+    const existing = entries.get(key);
+
+    if (!isDefined(existing)) {
+      entries.set(key, entry);
+      return;
+    }
+
+    entries.set(key, {
+      ...existing,
+      ...entry,
+      profileID: entry.profileID ?? existing.profileID,
+      profileName: entry.profileName ?? existing.profileName,
+      knownIndex: isDefined(entry.knownIndex) ? entry.knownIndex : existing.knownIndex,
+    });
+  };
+
+  if (scopeID === getDefaultActiveStealthScopeID()) {
+    for (const known of getKnownEphemeralAddresses()) {
+      addEntry({
+        key: `${scopeID}:${known.address.toLowerCase()}`,
+        address: known.address,
+        knownIndex: known.index,
+        source: "known",
+      });
+    }
+  }
+
+  const sessionScope = getEphemeralSessionScope(scopeID);
+  if (isDefined(sessionScope) && isDefined(sessionScope.lastKnownAddress)) {
+    addEntry({
+      key: `${scopeID}:${sessionScope.lastKnownAddress.toLowerCase()}`,
+      address: sessionScope.lastKnownAddress,
+      knownIndex: sessionScope.lastKnownIndex,
+      source: "session",
+    });
+  }
+
+  for (const profile of getProfilesForScope(scopeID)) {
+    if (!isDefined(profile.accountAddress)) {
+      continue;
+    }
+
+    addEntry({
+      key: `${scopeID}:${profile.accountAddress.toLowerCase()}`,
+      address: profile.accountAddress,
+      profileID: profile.id,
+      profileName: profile.name,
+      knownIndex: profile.slot,
+      source: "profile",
+    });
+  }
+
+  return [...entries.values()].sort((left, right) => {
+    if (isDefined(left.profileID) && !isDefined(right.profileID)) {
+      return -1;
+    }
+    if (!isDefined(left.profileID) && isDefined(right.profileID)) {
+      return 1;
+    }
+    return left.address.localeCompare(right.address);
+  });
+};
+
+const formatScopeAddressEntry = (
+  entry: StealthScopeAddressEntry,
+  activeProfileID?: string,
+) => {
+  const activeProfileTag = entry.profileID === activeProfileID ? "[ACTIVE PROFILE]".green : "";
+  const profileTag = isDefined(entry.profileName)
+    ? `${entry.profileName}`.cyan
+    : "unmanaged".yellow;
+  const indexTag = isDefined(entry.knownIndex) ? `idx=${entry.knownIndex}` : "idx=n/a";
+  return [
+    shortAddress(entry.address),
+    profileTag,
+    indexTag,
+    `source=${entry.source}`,
+    activeProfileTag,
+  ]
+    .filter((part) => part.length > 0)
+    .join(" · ");
 };
 
 const getStealthSignerScopeCandidatesForProfile = (profile: {
@@ -818,6 +979,8 @@ export const runStealthProfileWithdrawReshieldPrompt = async (): Promise<void> =
 const buildStealthCardHeader = async () => {
   const summary = getStealthProfileSummary();
   const internalState = getCurrentKnownEphemeralState();
+  const activeScopeID = getActiveEphemeralSessionScopeID();
+  const scopeCount = collectStealthAppScopeIDs().length;
   const allProfiles = listStealthProfiles();
   const profiles = allProfiles.slice(0, 3);
   const activeProfile = allProfiles.find((profile) => profile.id === summary.activeProfileID);
@@ -834,12 +997,13 @@ const buildStealthCardHeader = async () => {
         : "Fund or withdraw active profile".cyan;
 
   const rows = [
-    `${"┌─ Stealth Account Manager".grey} ${"(Interactive Card)".dim}`,
+    `${"┌─ Stealth App Manager".grey} ${"(Interactive Card)".dim}`,
     `${"│".grey} profiles=${summary.total.toString().cyan} · ${summary.linked
       .toString()
-      .green} linked · ${summary.scoped.toString().grey} scoped · ${summary.withSignerScope
+      .green} linked · scopes=${scopeCount.toString().cyan} · ${summary.withSignerScope
       .toString()
       .magenta} signer-bound`,
+    `${"│".grey} active scope=${formatScopeName(activeScopeID).cyan}`,
     `${"│".grey} active profile=${activeProfile?.name ?? "none"} · account=${shortAddress(summary.activeAccountAddress)}`,
     `${"│".grey} active public balances=${activePublicBalances}`,
     `${"│".grey} internal slot=${internalState?.currentIndex ?? "n/a"} · address=${shortAddress(
@@ -869,6 +1033,352 @@ const buildStealthCardHeader = async () => {
 
   rows.push(`${"└─".grey}`);
   return rows.join("\n");
+};
+
+const buildStealthAppManagerChoices = () => {
+  const activeScopeID = getActiveEphemeralSessionScopeID();
+  const activeProfile = getActiveStealthProfile();
+  const activeProfileSummary = getStealthProfileSummary();
+  const scopeChoices = collectStealthAppScopeIDs().map((scopeID) => {
+    const addresses = getKnownAddressesForScope(scopeID);
+    const profileCount = getProfilesForScope(scopeID).length;
+    const activeTag = scopeID === activeScopeID ? "[ACTIVE]".green : "";
+    return {
+      name: `scope:${scopeID}`,
+      message: [
+        formatScopeName(scopeID).cyan,
+        `addresses=${addresses.length}`,
+        `profiles=${profileCount}`,
+        activeTag,
+      ]
+        .filter((part) => part.length > 0)
+        .join(" · "),
+    };
+  });
+
+  const choices: any[] = [
+    {
+      message: ` >> ${"Scopes".grey.bold} <<`,
+      role: "separator",
+    },
+    ...scopeChoices,
+    { name: "create-user-scope", message: "Create user-defined scope" },
+    {
+      message: ` >> ${"Profiles".grey.bold} <<`,
+      role: "separator",
+    },
+    { name: "manage-profiles", message: `Manage profiles (${activeProfileSummary.total})` },
+    { name: "set-active-profile", message: `Set active profile (${activeProfile?.name ?? "none"})` },
+  ];
+
+  if (activeProfileSummary.hasActiveLinkedAddress) {
+    choices.push({
+      name: "active-profile-actions",
+      message: `Open active profile actions (${activeProfile?.name ?? "linked profile"})`.cyan,
+    });
+  }
+
+  choices.push({ name: "exit-menu", message: "Go Back".grey });
+  return choices;
+};
+
+const promptCreateUserScope = async (): Promise<Optional<string>> => {
+  const prompt = new Input({
+    header: " ",
+    message: "New user scope ID (1 or greater)",
+    validate: (value: string) => {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 1;
+    },
+  });
+
+  const scopeInput = (await prompt.run().catch(confirmPromptCatch)) as
+    | string
+    | undefined;
+  if (!isDefined(scopeInput)) {
+    return undefined;
+  }
+
+  return scopeInput.trim();
+};
+
+const buildStealthScopeHeader = async (scopeID: string) => {
+  const isActiveScope = getActiveEphemeralSessionScopeID() === scopeID;
+  const scope = getEphemeralSessionScope(scopeID);
+  const addresses = getKnownAddressesForScope(scopeID);
+  const profiles = getProfilesForScope(scopeID);
+  const referenceAddress = scope?.lastKnownAddress ?? addresses[0]?.address;
+  const publicBalances = await formatPublicBalanceSummary(referenceAddress);
+
+  return [
+    `${"┌─".grey} ${formatScopeName(scopeID).cyan} ${"(Scope View)".dim}`,
+    `${"│".grey} active=${isActiveScope ? "yes".green : "no".grey} · addresses=${addresses.length} · profiles=${profiles.length}`,
+    `${"│".grey} last index=${scope?.lastKnownIndex ?? "n/a"} · ratchets=${scope?.ratchetCount ?? 0}`,
+    `${"│".grey} last address=${shortAddress(referenceAddress)} · balances=${publicBalances}`,
+    `${"└─".grey}`,
+  ].join("\n");
+};
+
+const buildStealthScopeChoices = (scopeID: string) => {
+  const addresses = getKnownAddressesForScope(scopeID);
+  const activeProfileID = getStealthProfileSummary().activeProfileID;
+  const choices: any[] = [
+    {
+      name: "set-active-scope",
+      message: getActiveEphemeralSessionScopeID() === scopeID
+        ? `Active scope = ${formatScopeName(scopeID)}`.green
+        : `Set active scope to ${formatScopeName(scopeID)}`,
+    },
+    { name: "poll-scope", message: "Poll scope".cyan },
+    { name: "manual-ratchet", message: "Ratchet scope" },
+    { name: "set-index", message: "Set scope index" },
+    { name: "scope-policy", message: "Update ratchet policy" },
+  ];
+
+  if (scopeID !== getDefaultActiveStealthScopeID()) {
+    choices.push({ name: "remove-scope", message: "Remove scope" });
+  }
+
+  if (addresses.length) {
+    choices.push(
+      {
+        message: ` >> ${"Addresses".grey.bold} <<`,
+        role: "separator",
+      },
+      ...addresses.map((entry) => ({
+        name: `address:${entry.key}`,
+        message: formatScopeAddressEntry(entry, activeProfileID),
+      })),
+    );
+  }
+
+  choices.push({ name: "exit-menu", message: "Go Back".grey });
+  return choices;
+};
+
+const pollScopeAddress = async (
+  scopeID: string,
+  entry?: StealthScopeAddressEntry,
+) => {
+  const encryptionKey = await getSaltedPassword();
+  if (!isDefined(encryptionKey)) {
+    return undefined;
+  }
+
+  const knownIndex = entry?.knownIndex;
+  if (isDefined(knownIndex)) {
+    return setEphemeralWalletIndex(encryptionKey, knownIndex, scopeID).catch(
+      (error) => {
+        console.log(`Failed to poll address: ${(error as Error).message}`.yellow);
+        return undefined;
+      },
+    );
+  }
+
+  return setCurrentEphemeralWalletSession(encryptionKey, scopeID).catch((error) => {
+    console.log(`Failed to poll scope: ${(error as Error).message}`.yellow);
+    return undefined;
+  });
+};
+
+const runScopeAddressPrompt = async (
+  scopeID: string,
+  entry: StealthScopeAddressEntry,
+): Promise<void> => {
+  setActiveEphemeralSessionScopeID(scopeID);
+  if (isDefined(entry.profileID)) {
+    setActiveStealthProfile(entry.profileID);
+  }
+
+  await pollScopeAddress(scopeID, entry);
+  const publicBalances = await formatPublicBalanceSummary(entry.address);
+  const profile = isDefined(entry.profileID) ? getStealthProfile(entry.profileID) : undefined;
+
+  const prompt = new Select({
+    header: [
+      `${"┌─ Address Profile".grey} ${"(Scope Selection)".dim}`,
+      `${"│".grey} scope=${formatScopeName(scopeID).cyan}`,
+      `${"│".grey} address=${entry.address}`,
+      `${"│".grey} profile=${profile?.name ?? "none"} · balances=${publicBalances}`,
+      `${"└─".grey}`,
+    ].join("\n"),
+    message: "Address actions",
+    choices: [
+      {
+        name: "set-active-profile",
+        message: isDefined(profile)
+          ? `Set active profile (${profile.name})`
+          : "No linked profile".grey,
+        disabled: !isDefined(profile),
+      },
+      {
+        name: "profile-funds",
+        message: isDefined(profile)
+          ? `Open profile balances & actions (${profile.name})`.cyan
+          : "No linked profile actions".grey,
+        disabled: !isDefined(profile),
+      },
+      { name: "repoll", message: "Poll address again" },
+      { name: "exit-menu", message: "Go Back".grey },
+    ],
+    multiple: false,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return;
+  }
+
+  switch (selection) {
+    case "set-active-profile": {
+      if (isDefined(profile)) {
+        setActiveStealthProfile(profile.id);
+        console.log(`Active profile set to ${profile.name}.`.green);
+        await confirmPromptCatchRetry("");
+      }
+      return runScopeAddressPrompt(scopeID, entry);
+    }
+    case "profile-funds": {
+      if (!isDefined(profile)) {
+        return runScopeAddressPrompt(scopeID, entry);
+      }
+      setActiveStealthProfile(profile.id);
+      await runExternalStealthProfileManagerPrompt();
+      return;
+    }
+    case "repoll": {
+      await pollScopeAddress(scopeID, entry);
+      return runScopeAddressPrompt(scopeID, entry);
+    }
+    default: {
+      return;
+    }
+  }
+};
+
+const runStealthScopePrompt = async (scopeID: string): Promise<void> => {
+  const prompt = createLiveSelect({
+    header: () => buildStealthScopeHeader(scopeID),
+    message: formatScopeName(scopeID),
+    choices: () => buildStealthScopeChoices(scopeID),
+    multiple: false,
+    refreshIntervalMs: 1200,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return;
+  }
+
+  if (selection.startsWith("address:")) {
+    const key = selection.slice("address:".length);
+    const entry = getKnownAddressesForScope(scopeID).find((item) => item.key === key);
+    if (isDefined(entry)) {
+      await runScopeAddressPrompt(scopeID, entry);
+    }
+    return runStealthScopePrompt(scopeID);
+  }
+
+  switch (selection) {
+    case "set-active-scope": {
+      setActiveEphemeralSessionScopeID(scopeID);
+      console.log(`Active scope set to ${formatScopeName(scopeID)}.`.green);
+      await confirmPromptCatchRetry("");
+      return runStealthScopePrompt(scopeID);
+    }
+    case "poll-scope": {
+      setActiveEphemeralSessionScopeID(scopeID);
+      const encryptionKey = await getSaltedPassword();
+      if (!isDefined(encryptionKey)) {
+        return runStealthScopePrompt(scopeID);
+      }
+      const synced = await syncCurrentEphemeralWallet(encryptionKey, scopeID);
+      if (!isDefined(synced)) {
+        console.log(`Failed to poll ${formatScopeName(scopeID)}.`.yellow);
+      } else {
+        console.log(`Polled ${formatScopeName(scopeID)} @ slot ${synced.currentIndex}: ${synced.currentAddress}`.green);
+      }
+      await confirmPromptCatchRetry("");
+      return runStealthScopePrompt(scopeID);
+    }
+    case "manual-ratchet": {
+      setActiveEphemeralSessionScopeID(scopeID);
+      const encryptionKey = await getSaltedPassword();
+      if (!isDefined(encryptionKey)) {
+        return runStealthScopePrompt(scopeID);
+      }
+      const ratcheted = await manualRatchetEphemeralWallet(encryptionKey, scopeID);
+      if (!isDefined(ratcheted)) {
+        console.log(`Failed to ratchet ${formatScopeName(scopeID)}.`.yellow);
+      } else {
+        console.log(`Ratcheted ${formatScopeName(scopeID)} to slot ${ratcheted.currentIndex}: ${ratcheted.currentAddress}`.green);
+      }
+      await confirmPromptCatchRetry("");
+      return runStealthScopePrompt(scopeID);
+    }
+    case "set-index": {
+      setActiveEphemeralSessionScopeID(scopeID);
+      const encryptionKey = await getSaltedPassword();
+      if (!isDefined(encryptionKey)) {
+        return runStealthScopePrompt(scopeID);
+      }
+
+      const indexPrompt = new Input({
+        header: " ",
+        message: `Set index for ${formatScopeName(scopeID)}`,
+        validate: (value: string) => {
+          const parsed = Number(value);
+          return Number.isInteger(parsed) && parsed >= 0;
+        },
+      });
+
+      const indexInput = (await indexPrompt.run().catch(confirmPromptCatch)) as
+        | string
+        | undefined;
+      if (!isDefined(indexInput)) {
+        return runStealthScopePrompt(scopeID);
+      }
+
+      const next = await setEphemeralWalletIndex(encryptionKey, Number(indexInput), scopeID).catch(
+        (error) => {
+          console.log(`Failed to set scope index: ${(error as Error).message}`.yellow);
+          return undefined;
+        },
+      );
+
+      if (isDefined(next)) {
+        console.log(`Set ${formatScopeName(scopeID)} to slot ${next.currentIndex}: ${next.currentAddress}`.green);
+        await confirmPromptCatchRetry("");
+      }
+      return runStealthScopePrompt(scopeID);
+    }
+    case "scope-policy": {
+      setActiveEphemeralSessionScopeID(scopeID);
+      upsertEphemeralSessionScope(scopeID);
+      await promptAndApplyScopePolicyForScope(scopeID);
+      return runStealthScopePrompt(scopeID);
+    }
+    case "remove-scope": {
+      const confirmed = await confirmPrompt(`Remove ${formatScopeName(scopeID)}?`, {
+        initial: false,
+      });
+      if (!confirmed) {
+        return runStealthScopePrompt(scopeID);
+      }
+
+      const removed = removeEphemeralSessionScope(scopeID);
+      console.log(
+        removed
+          ? `Removed ${formatScopeName(scopeID)}.`.green
+          : `${formatScopeName(scopeID)} was not found.`.yellow,
+      );
+      await confirmPromptCatchRetry("");
+      return;
+    }
+    default: {
+      return;
+    }
+  }
 };
 
 const buildExternalStealthProfileChoices = () => {
@@ -1497,13 +2007,8 @@ const promptAddressLookup = async () => {
   await confirmPromptCatchRetry("");
 };
 
-const promptAndApplyScopePolicy = async () => {
-  const scopeSelection = await promptOptionalScopeSelection();
-  if (scopeSelection.aborted || !isDefined(scopeSelection.scopeID)) {
-    return;
-  }
-
-  upsertEphemeralSessionScope(scopeSelection.scopeID);
+const promptAndApplyScopePolicyForScope = async (scopeID: string) => {
+  upsertEphemeralSessionScope(scopeID);
 
   const enabled = await confirmPrompt("Enable ratcheting for this scope?", {
     initial: true,
@@ -1540,13 +2045,22 @@ const promptAndApplyScopePolicy = async () => {
     return;
   }
 
-  setEphemeralSessionRatchetPolicy(scopeSelection.scopeID, {
+  setEphemeralSessionRatchetPolicy(scopeID, {
     enabled,
     broadcastMode: mode,
     ratchetOnTransactions: txSelection,
   });
-  console.log(`Updated scope policy for ${scopeSelection.scopeID}.`.green);
+  console.log(`Updated scope policy for ${scopeID}.`.green);
   await confirmPromptCatchRetry("");
+};
+
+const promptAndApplyScopePolicy = async () => {
+  const scopeSelection = await promptOptionalScopeSelection();
+  if (scopeSelection.aborted || !isDefined(scopeSelection.scopeID)) {
+    return;
+  }
+
+  return promptAndApplyScopePolicyForScope(scopeSelection.scopeID);
 };
 
 const runInternalScopeManagerPrompt = async (): Promise<void> => {
@@ -1781,8 +2295,8 @@ const runInternalStealthToolsPrompt = async (): Promise<void> => {
 export const runEphemeralManagerPrompt = async (): Promise<void> => {
   const prompt = createLiveSelect({
     header: buildStealthCardHeader,
-    message: "Stealth Account Tools",
-    choices: buildStealthManagerChoices,
+    message: "Stealth App Manager",
+    choices: buildStealthAppManagerChoices,
     multiple: false,
     refreshIntervalMs: 1200,
   });
@@ -1792,25 +2306,40 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
     return;
   }
 
+  if (selection.startsWith("scope:")) {
+    const scopeID = selection.slice("scope:".length);
+    await runStealthScopePrompt(scopeID);
+    return runEphemeralManagerPrompt();
+  }
+
   switch (selection) {
-    case "external-profiles": {
+    case "manage-profiles": {
       await runExternalStealthProfileManagerPrompt();
       return runEphemeralManagerPrompt();
     }
-    case "quick-profiles": {
+    case "set-active-profile": {
+      const profileID = await selectStealthProfileID("Set active profile");
+      if (isDefined(profileID)) {
+        const profile = setActiveStealthProfile(profileID);
+        console.log(`Active profile set to ${profile.name} (${profile.id}).`.green);
+        await confirmPromptCatchRetry("");
+      }
+      return runEphemeralManagerPrompt();
+    }
+    case "active-profile-actions": {
       await runExternalStealthProfileManagerPrompt();
       return runEphemeralManagerPrompt();
     }
-    case "funds-menu": {
-      await runExternalStealthProfileManagerPrompt();
-      return runEphemeralManagerPrompt();
-    }
-    case "quick-funds": {
-      await runExternalStealthProfileManagerPrompt();
-      return runEphemeralManagerPrompt();
-    }
-    case "internal-tools": {
-      await runInternalStealthToolsPrompt();
+    case "create-user-scope": {
+      const scopeID = await promptCreateUserScope();
+      if (!isDefined(scopeID)) {
+        return runEphemeralManagerPrompt();
+      }
+
+      upsertEphemeralSessionScope(scopeID);
+      setActiveEphemeralSessionScopeID(scopeID);
+      console.log(`Created ${formatScopeName(scopeID)} and set it active.`.green);
+      await confirmPromptCatchRetry("");
       return runEphemeralManagerPrompt();
     }
     default: {
