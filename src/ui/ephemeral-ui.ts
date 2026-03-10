@@ -690,6 +690,12 @@ const formatStealthProfileLine = (
     .join(" · ");
 };
 
+const getStealthProfilesForScope = (scopeID: string) => {
+  return listStealthProfiles().filter((profile) => {
+    return getStealthSignerScopeCandidatesForProfile(profile).includes(scopeID);
+  });
+};
+
 const printStealthProfiles = () => {
   const summary = getStealthProfileSummary();
   const profiles = listStealthProfiles();
@@ -701,6 +707,23 @@ const printStealthProfiles = () => {
 
   console.log(
     `Profiles=${summary.total} scoped=${summary.scoped} slotted=${summary.slotted} signer-bound=${summary.withSignerScope}`.grey,
+  );
+  profiles.forEach((profile) => {
+    console.log(formatStealthProfileLine(profile, summary.activeProfileID).grey);
+  });
+};
+
+const printStealthProfilesForScope = (scopeID: string) => {
+  const profiles = getStealthProfilesForScope(scopeID);
+  const summary = getStealthProfileSummary();
+
+  if (!profiles.length) {
+    console.log(`No external stealth profiles found for ${formatScopeName(scopeID)}.`.yellow);
+    return;
+  }
+
+  console.log(
+    `Profiles in ${formatScopeName(scopeID)}=${profiles.length} total=${summary.total}`.grey,
   );
   profiles.forEach((profile) => {
     console.log(formatStealthProfileLine(profile, summary.activeProfileID).grey);
@@ -1243,7 +1266,7 @@ const runScopeAddressPrompt = async (
         return runScopeAddressPrompt(scopeID, entry);
       }
       setActiveStealthProfile(profile.id);
-      await runExternalStealthProfileManagerPrompt();
+      await runActiveStealthProfilePrompt();
       return;
     }
     case "repoll": {
@@ -1384,6 +1407,8 @@ const runStealthScopePrompt = async (scopeID: string): Promise<void> => {
 const buildExternalStealthProfileChoices = () => {
   const summary = getStealthProfileSummary();
   const activeProfile = getActiveStealthProfile();
+  const activeScopeID = getActiveEphemeralSessionScopeID();
+  const scopedProfiles = getStealthProfilesForScope(activeScopeID);
   const activeSignerScopeID = activeProfile?.signerStrategyScopeID;
   const choices: any[] = [
     {
@@ -1398,7 +1423,18 @@ const buildExternalStealthProfileChoices = () => {
         message: ` >> ${"Profiles".grey.bold} <<`,
         role: "separator",
       },
-      { name: "list-profiles", message: `View profiles (${summary.total})` },
+      {
+        name: "open-active-profile",
+        message: activeProfile
+          ? `Open active profile (${activeProfile.name})`.cyan
+          : "Open active profile".grey,
+        disabled: !isDefined(activeProfile),
+      },
+      {
+        name: "list-scope-profiles",
+        message: `View profiles in ${formatScopeName(activeScopeID)} (${scopedProfiles.length})`,
+      },
+      { name: "list-profiles", message: `View all profiles (${summary.total})` },
       { name: "edit-profile", message: "Edit profile" },
       { name: "set-active", message: "Choose active profile" },
       { name: "remove-profile", message: "Remove profile" },
@@ -1430,6 +1466,136 @@ const buildExternalStealthProfileChoices = () => {
 
   choices.push({ name: "exit-menu", message: "Go Back".grey });
   return choices;
+};
+
+const buildExternalStealthProfilesHeader = async () => {
+  const summary = getStealthProfileSummary();
+  const activeScopeID = getActiveEphemeralSessionScopeID();
+  const activeProfile = getActiveStealthProfile();
+  const scopeProfiles = getProfilesForScope(activeScopeID);
+  const activeBalances = await formatPublicBalanceSummary(activeProfile?.accountAddress);
+
+  return [
+    `${"┌─ External Profiles".grey} ${"(Interactive Card)".dim}`,
+    `${"│".grey} active scope=${formatScopeName(activeScopeID).cyan} · in-scope profiles=${scopeProfiles.length} · total=${summary.total}`,
+    `${"│".grey} active profile=${activeProfile?.name ?? "none"} · address=${shortAddress(activeProfile?.accountAddress)}`,
+    `${"│".grey} active public balances=${activeBalances}`,
+    `${"└─".grey}`,
+  ].join("\n");
+};
+
+const buildActiveStealthProfileHeader = async () => {
+  const activeProfile = getActiveStealthProfile();
+  const activeScopeID = getActiveEphemeralSessionScopeID();
+
+  if (!isDefined(activeProfile)) {
+    return [
+      `${"┌─ Active Profile".grey} ${"(Interactive Card)".dim}`,
+      `${"│".grey} no active profile selected`,
+      `${"└─".grey}`,
+    ].join("\n");
+  }
+
+  const preferredScopeID = getProfileScopeID(activeProfile) ?? activeScopeID;
+  const publicBalances = await formatPublicBalanceSummary(activeProfile.accountAddress);
+
+  return [
+    `${"┌─ Active Profile".grey} ${"(Interactive Card)".dim}`,
+    `${"│".grey} profile=${activeProfile.name.cyan} · account=${shortAddress(activeProfile.accountAddress)}`,
+    `${"│".grey} profile scope=${formatScopeName(preferredScopeID).cyan} · active scope=${formatScopeName(activeScopeID).cyan}`,
+    `${"│".grey} public balances=${publicBalances}`,
+    `${"└─".grey}`,
+  ].join("\n");
+};
+
+const buildActiveStealthProfileChoices = () => {
+  const activeProfile = getActiveStealthProfile();
+  const choices: any[] = [
+    { name: "fund-unshield-eth", message: "Fund with private ETH" },
+    { name: "fund-unshield-erc20", message: "Fund with private ERC20" },
+    { name: "withdraw-reshield-eth", message: "Withdraw ETH to private balance" },
+    { name: "withdraw-reshield-erc20", message: "Withdraw ERC20 to private balance" },
+  ];
+
+  if (isDefined(activeProfile)) {
+    choices.push(
+      {
+        message: ` >> ${"Profile State".grey.bold} <<`,
+        role: "separator",
+      },
+      { name: "set-profile-active-scope", message: "Set active scope to this profile" },
+      { name: "edit-profile", message: `Edit profile (${activeProfile.name})` },
+    );
+  }
+
+  choices.push({ name: "exit-menu", message: "Go Back".grey });
+  return choices;
+};
+
+const runActiveStealthProfilePrompt = async (): Promise<void> => {
+  const activeProfile = getActiveStealthProfile();
+  if (!isDefined(activeProfile)) {
+    console.log("No active stealth profile selected.".yellow);
+    await confirmPromptCatchRetry("");
+    return;
+  }
+
+  const prompt = createLiveSelect({
+    header: buildActiveStealthProfileHeader,
+    message: `Profile: ${activeProfile.name}`,
+    choices: buildActiveStealthProfileChoices,
+    multiple: false,
+    refreshIntervalMs: 1200,
+  });
+
+  const selection = await prompt.run().catch(confirmPromptCatch);
+  if (!selection || selection === "exit-menu") {
+    return;
+  }
+
+  switch (selection) {
+    case "fund-unshield-erc20": {
+      await runFundUnshieldERC20ForActiveProfile();
+      return runActiveStealthProfilePrompt();
+    }
+    case "fund-unshield-eth": {
+      await runFundUnshieldETHForActiveProfile();
+      return runActiveStealthProfilePrompt();
+    }
+    case "withdraw-reshield-erc20": {
+      await runWithdrawReshieldERC20FromProfile();
+      return runActiveStealthProfilePrompt();
+    }
+    case "withdraw-reshield-eth": {
+      await runWithdrawReshieldETHFromProfile();
+      return runActiveStealthProfilePrompt();
+    }
+    case "set-profile-active-scope": {
+      const preferredScopeID = getProfileScopeID(activeProfile);
+      const nextScopeID = preferredScopeID ?? getActiveEphemeralSessionScopeID();
+      setActiveEphemeralSessionScopeID(nextScopeID);
+      console.log(`Active scope set to ${formatScopeName(nextScopeID)} for ${activeProfile.name}.`.green);
+      await confirmPromptCatchRetry("");
+      return runActiveStealthProfilePrompt();
+    }
+    case "edit-profile": {
+      const profileInput = await promptStealthProfileInput(activeProfile);
+      if (!isDefined(profileInput)) {
+        return runActiveStealthProfilePrompt();
+      }
+
+      upsertStealthProfile({
+        ...profileInput,
+        id: activeProfile.id,
+      });
+      console.log(`Updated profile ${activeProfile.name}.`.green);
+      await confirmPromptCatchRetry("");
+      return runActiveStealthProfilePrompt();
+    }
+    default: {
+      return;
+    }
+  }
 };
 
 const buildStealthManagerChoices = () => {
@@ -1596,8 +1762,8 @@ const buildInternalScopeManagerChoices = () => {
 
 const selectStealthProfileID = async (
   message: string,
+  profiles = listStealthProfiles(),
 ): Promise<Optional<string>> => {
-  const profiles = listStealthProfiles();
   const summary = getStealthProfileSummary();
 
   if (!profiles.length) {
@@ -1652,6 +1818,92 @@ const promptOptionalText = async (
   return normalized;
 };
 
+const promptStealthProfileScopeMode = async (existing?: {
+  scopeID?: string;
+  slot?: number;
+}) => {
+  const activeScopeID = getActiveEphemeralSessionScopeID();
+  const existingHasSlot = isDefined(existing?.slot);
+  const existingScopeID = existing?.scopeID?.trim();
+  const defaultChoice = existingHasSlot
+    ? "slot-derived"
+    : existingScopeID && existingScopeID !== activeScopeID
+      ? "custom-scope"
+      : "active-scope";
+
+  const modePrompt = new Select({
+    header: " ",
+    message: "Profile scope mode",
+    choices: [
+      {
+        name: "active-scope",
+        message: `Use active scope (${formatScopeName(activeScopeID)})`,
+      },
+      {
+        name: "custom-scope",
+        message: "Use a custom explicit scope ID",
+      },
+      {
+        name: "slot-derived",
+        message: "Derive from slot number (slot-<n>)",
+      },
+    ],
+    initial: defaultChoice,
+    multiple: false,
+  });
+
+  const mode = (await modePrompt.run().catch(confirmPromptCatch)) as
+    | string
+    | undefined;
+  if (!isDefined(mode)) {
+    return undefined;
+  }
+
+  if (mode === "active-scope") {
+    return {
+      scopeID: activeScopeID,
+      slot: undefined,
+    };
+  }
+
+  if (mode === "custom-scope") {
+    const scopeID = await promptOptionalText(
+      "Custom scope ID",
+      existingScopeID && existingScopeID !== activeScopeID ? existingScopeID : "",
+    );
+    if (!isDefined(scopeID)) {
+      return undefined;
+    }
+
+    return {
+      scopeID,
+      slot: undefined,
+    };
+  }
+
+  const slotPrompt = new Input({
+    header: " ",
+    message: "Slot number for slot-derived scope",
+    initial: isDefined(existing?.slot) ? String(existing?.slot) : "",
+    validate: (value: string) => {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed >= 0;
+    },
+  });
+
+  const slotInput = (await slotPrompt.run().catch(confirmPromptCatch)) as
+    | string
+    | undefined;
+  if (!isDefined(slotInput)) {
+    return undefined;
+  }
+
+  return {
+    scopeID: undefined,
+    slot: Number(slotInput),
+  };
+};
+
 const resolveGeneratedStealthProfileAddress = async (
   slot?: number,
   scopeID?: string,
@@ -1660,7 +1912,7 @@ const resolveGeneratedStealthProfileAddress = async (
     ? scopeID
     : isDefined(slot)
     ? slotToScopeID(slot)
-    : undefined;
+    : getActiveEphemeralSessionScopeID();
 
   if (isDefined(slot)) {
     const encryptionKey = await getSaltedPassword();
@@ -1681,11 +1933,6 @@ const resolveGeneratedStealthProfileAddress = async (
       return undefined;
     }
     return updated?.currentAddress;
-  }
-
-  const knownState = getCurrentKnownEphemeralState();
-  if (isDefined(knownState?.currentAddress)) {
-    return knownState?.currentAddress;
   }
 
   const encryptionKey = await getSaltedPassword();
@@ -1728,31 +1975,12 @@ const promptStealthProfileInput = async (
     return undefined;
   }
 
-  const scopeInput = await promptOptionalText(
-    "Optional scope ID (blank for none)",
-    existing?.scopeID ?? "",
-  );
-
-  const slotPrompt = new Input({
-    header: " ",
-    message: "Optional slot number (blank for none)",
-    initial: isDefined(existing?.slot) ? String(existing?.slot) : "",
-    validate: (value: string) => {
-      if (!value.trim().length) {
-        return true;
-      }
-      const parsed = Number(value);
-      return Number.isInteger(parsed) && parsed >= 0;
-    },
-  });
-
-  const slotInput = (await slotPrompt.run().catch(confirmPromptCatch)) as
-    | string
-    | undefined;
-  if (!isDefined(slotInput)) {
+  const scopeMode = await promptStealthProfileScopeMode(existing);
+  if (!isDefined(scopeMode)) {
     return undefined;
   }
-  const slot = slotInput.trim().length ? Number(slotInput) : undefined;
+
+  const { scopeID: scopeInput, slot } = scopeMode;
 
   const signerStrategyScopeID = await promptOptionalText(
     "Optional signer strategy scope ID (blank for none)",
@@ -1788,8 +2016,8 @@ const promptStealthProfileInput = async (
 
 const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
   const prompt = createLiveSelect({
-    header: buildStealthCardHeader,
-    message: "External Stealth Profiles",
+    header: buildExternalStealthProfilesHeader,
+    message: "External Profiles",
     choices: buildExternalStealthProfileChoices,
     multiple: false,
     refreshIntervalMs: 1200,
@@ -1801,6 +2029,15 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
   }
 
   switch (selection) {
+    case "open-active-profile": {
+      await runActiveStealthProfilePrompt();
+      return runExternalStealthProfileManagerPrompt();
+    }
+    case "list-scope-profiles": {
+      printStealthProfilesForScope(getActiveEphemeralSessionScopeID());
+      await confirmPromptCatchRetry("");
+      return runExternalStealthProfileManagerPrompt();
+    }
     case "list-profiles": {
       printStealthProfiles();
       await confirmPromptCatchRetry("");
@@ -1857,38 +2094,7 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
       return runExternalStealthProfileManagerPrompt();
     }
     case "funds-menu": {
-      const fundChoices: any[] = [
-        { name: "fund-unshield-erc20", message: "Fund with private ERC20" },
-        { name: "fund-unshield-eth", message: "Fund with private ETH" },
-        { name: "withdraw-reshield-erc20", message: "Withdraw ERC20 to private balance" },
-        { name: "withdraw-reshield-eth", message: "Withdraw ETH to private balance" },
-        { name: "exit-menu", message: "Go Back".grey },
-      ];
-      const fundSelection = await new Select({
-        header: await buildStealthCardHeader(),
-        message: "Active Profile Funds",
-        choices: fundChoices,
-        multiple: false,
-      }).run().catch(confirmPromptCatch);
-      if (!fundSelection || fundSelection === "exit-menu") {
-        return runExternalStealthProfileManagerPrompt();
-      }
-      switch (fundSelection) {
-        case "fund-unshield-erc20":
-          await runFundUnshieldERC20ForActiveProfile();
-          break;
-        case "fund-unshield-eth":
-          await runFundUnshieldETHForActiveProfile();
-          break;
-        case "withdraw-reshield-erc20":
-          await runWithdrawReshieldERC20FromProfile();
-          break;
-        case "withdraw-reshield-eth":
-          await runWithdrawReshieldETHFromProfile();
-          break;
-        default:
-          break;
-      }
+      await runActiveStealthProfilePrompt();
       return runExternalStealthProfileManagerPrompt();
     }
     case "fund-unshield-erc20": {
@@ -2327,7 +2533,7 @@ export const runEphemeralManagerPrompt = async (): Promise<void> => {
       return runEphemeralManagerPrompt();
     }
     case "active-profile-actions": {
-      await runExternalStealthProfileManagerPrompt();
+      await runActiveStealthProfilePrompt();
       return runEphemeralManagerPrompt();
     }
     case "create-user-scope": {
