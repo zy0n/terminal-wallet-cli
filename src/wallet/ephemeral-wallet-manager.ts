@@ -35,6 +35,7 @@ type EphemeralAccountWithSigner = {
 };
 
 const lower = (value: string) => value.toLowerCase();
+const CHAIN_SCOPED_SCOPE_REGEX = /^chain-\d+:(.+)$/;
 
 const scopedEphemeralDerivationStrategies: MapType<EphemeralWalletDerivationStrategy> = {};
 const MAX_SCOPE_ID_LENGTH = 128;
@@ -93,7 +94,19 @@ const getScopedDerivationStrategy = (scopeID?: string) => {
   if (!isDefined(normalizedScopeID)) {
     return undefined;
   }
-  return scopedEphemeralDerivationStrategies[normalizedScopeID];
+
+  const scopedStrategy = scopedEphemeralDerivationStrategies[normalizedScopeID];
+  if (isDefined(scopedStrategy)) {
+    return scopedStrategy;
+  }
+
+  const baseScopeMatch = normalizedScopeID.match(CHAIN_SCOPED_SCOPE_REGEX);
+  if (!isDefined(baseScopeMatch)) {
+    return undefined;
+  }
+
+  const [, baseScopeID] = baseScopeMatch;
+  return scopedEphemeralDerivationStrategies[baseScopeID];
 };
 
 const applyScopedDerivationStrategy = (

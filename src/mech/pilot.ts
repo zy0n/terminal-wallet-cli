@@ -61,8 +61,8 @@ export const launchPilot = async (
   onTransactionRequest(processTransactionRequest);
   const { port, secret } = await ensureHttpServer();
   const callbackAddress = `http://localhost:${port}?secret=${secret}`;
-
-  const chainShortName = "matic";
+  console.log('balances', balances)
+  const chainShortName = "eth";
   const label = "Terminal Mech";
 
   const launchUrl = new URL(

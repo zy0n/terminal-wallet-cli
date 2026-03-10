@@ -43,7 +43,7 @@ import {
   confirmPromptCatchRetry,
 } from "./confirm-ui";
 import { createLiveSelect } from "./live-select";
-import { getWrappedTokenInfoForChain } from "../network/network-util";
+import { getChainForName, getWrappedTokenInfoForChain } from "../network/network-util";
 import { getERC20Balance } from "../balance/token-util";
 import { HDNodeWallet, formatUnits } from "ethers";
 
@@ -57,6 +57,21 @@ const transactionChoices = Object.values(RailgunTransaction).map((name) => ({
 type ScopeSelection = {
   aborted: boolean;
   scopeID?: string;
+};
+
+const getCurrentChainScopedScopeID = (scopeID?: string): Optional<string> => {
+  if (!isDefined(scopeID)) {
+    return undefined;
+  }
+
+  const normalizedScopeID = scopeID.trim();
+  if (!normalizedScopeID.length) {
+    return undefined;
+  }
+
+  const currentChain = getChainForName(getCurrentNetwork());
+  const baseScopeID = normalizedScopeID.replace(/^chain-\d+:/, "");
+  return `chain-${currentChain.id}:${baseScopeID}`;
 };
 
 const shortAddress = (address?: string) => {
@@ -154,13 +169,13 @@ const getProfileScopeID = (profile: {
   slot?: number;
 }) => {
   if (isDefined(profile.signerStrategyScopeID) && profile.signerStrategyScopeID.trim().length) {
-    return profile.signerStrategyScopeID.trim();
+    return getCurrentChainScopedScopeID(profile.signerStrategyScopeID);
   }
   if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
-    return profile.scopeID.trim();
+    return getCurrentChainScopedScopeID(profile.scopeID);
   }
   if (isDefined(profile.slot)) {
-    return slotToScopeID(profile.slot);
+    return getCurrentChainScopedScopeID(slotToScopeID(profile.slot));
   }
   return undefined;
 };
@@ -184,16 +199,25 @@ const getStealthSignerScopeCandidatesForProfile = (profile: {
     }
   };
 
-  add(profile.signerStrategyScopeID);
-  add(profile.scopeID);
+  const addScopeWithChainFallback = (value?: string) => {
+    if (!isDefined(value)) {
+      return;
+    }
+
+    add(getCurrentChainScopedScopeID(value));
+    add(value);
+  };
+
+  addScopeWithChainFallback(profile.signerStrategyScopeID);
+  addScopeWithChainFallback(profile.scopeID);
   if (isDefined(profile.slot)) {
-    add(slotToScopeID(profile.slot));
+    addScopeWithChainFallback(slotToScopeID(profile.slot));
   }
 
   if (isDefined(profile.signerStrategyScopeID)) {
     const maybeNumber = Number(profile.signerStrategyScopeID);
     if (Number.isInteger(maybeNumber) && maybeNumber >= 0) {
-      add(slotToScopeID(maybeNumber));
+      addScopeWithChainFallback(slotToScopeID(maybeNumber));
     }
   }
 
@@ -1415,7 +1439,14 @@ const runExternalStealthProfileManagerPrompt = async (): Promise<void> => {
         return runExternalStealthProfileManagerPrompt();
       }
 
-      const strategyScopeID = activeProfile.signerStrategyScopeID;
+      const strategyScopeID = getCurrentChainScopedScopeID(
+        activeProfile.signerStrategyScopeID,
+      );
+      if (!isDefined(strategyScopeID)) {
+        console.log("Active profile has no usable signer strategy scope ID.".yellow);
+        await confirmPromptCatchRetry("");
+        return runExternalStealthProfileManagerPrompt();
+      }
       const hasScopedStrategy = hasScopedEphemeralWalletDerivationStrategy(
         strategyScopeID,
       );

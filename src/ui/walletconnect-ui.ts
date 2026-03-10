@@ -800,6 +800,21 @@ const getCapturedBundleForRequest = (requestID: number, topic: string) => {
   });
 };
 
+const getCurrentChainScopedScopeID = (scopeID?: string): Optional<string> => {
+  if (!isDefined(scopeID)) {
+    return undefined;
+  }
+
+  const normalizedScopeID = scopeID.trim();
+  if (!normalizedScopeID.length) {
+    return undefined;
+  }
+
+  const currentChain = getChainForName(getCurrentNetwork());
+  const baseScopeID = normalizedScopeID.replace(/^chain-\d+:/, "");
+  return `chain-${currentChain.id}:${baseScopeID}`;
+};
+
 const getStealthSignerScopeForAddress = (connectedAddress: string) => {
   const normalized = connectedAddress.toLowerCase();
   const profile = listStealthProfiles().find((item) => {
@@ -810,13 +825,13 @@ const getStealthSignerScopeForAddress = (connectedAddress: string) => {
   }
 
   if (isDefined(profile.signerStrategyScopeID) && profile.signerStrategyScopeID.trim().length) {
-    return profile.signerStrategyScopeID.trim();
+    return getCurrentChainScopedScopeID(profile.signerStrategyScopeID);
   }
   if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
-    return profile.scopeID.trim();
+    return getCurrentChainScopedScopeID(profile.scopeID);
   }
   if (isDefined(profile.slot)) {
-    return `slot-${profile.slot}`;
+    return getCurrentChainScopedScopeID(`slot-${profile.slot}`);
   }
 
   return undefined;
@@ -841,16 +856,25 @@ const getStealthSignerScopeCandidatesForProfile = (profile: {
     }
   };
 
-  add(profile.signerStrategyScopeID);
-  add(profile.scopeID);
+  const addScopeWithChainFallback = (value?: string) => {
+    if (!isDefined(value)) {
+      return;
+    }
+
+    add(getCurrentChainScopedScopeID(value));
+    add(value);
+  };
+
+  addScopeWithChainFallback(profile.signerStrategyScopeID);
+  addScopeWithChainFallback(profile.scopeID);
   if (isDefined(profile.slot)) {
-    add(`slot-${profile.slot}`);
+    addScopeWithChainFallback(`slot-${profile.slot}`);
   }
 
   if (isDefined(profile.signerStrategyScopeID)) {
     const maybeNumber = Number(profile.signerStrategyScopeID);
     if (Number.isInteger(maybeNumber) && maybeNumber >= 0) {
-      add(`slot-${maybeNumber}`);
+      addScopeWithChainFallback(`slot-${maybeNumber}`);
     }
   }
 
@@ -897,13 +921,13 @@ const getPreferredScopeForProfile = (profile: {
   slot?: number;
 }) => {
   if (isDefined(profile.signerStrategyScopeID) && profile.signerStrategyScopeID.trim().length) {
-    return profile.signerStrategyScopeID.trim();
+    return getCurrentChainScopedScopeID(profile.signerStrategyScopeID);
   }
   if (isDefined(profile.scopeID) && profile.scopeID.trim().length) {
-    return profile.scopeID.trim();
+    return getCurrentChainScopedScopeID(profile.scopeID);
   }
   if (isDefined(profile.slot)) {
-    return `slot-${profile.slot}`;
+    return getCurrentChainScopedScopeID(`slot-${profile.slot}`);
   }
   return undefined;
 };
