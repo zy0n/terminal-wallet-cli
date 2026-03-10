@@ -551,11 +551,11 @@ const buildWalletConnectManagerChoices = () => {
   }
 
   choices.push(
-    // {
-    //   message: ` >> ${"Advanced".grey.bold} <<`,
-    //   role: "separator",
-    // },
-    // { name: "mech-test", message: "Test 7702 mech pilot".cyan },
+    {
+      message: ` >> ${"Advanced".grey.bold} <<`,
+      role: "separator",
+    },
+    { name: "mech-test", message: "Test 7702 mech pilot".cyan },
     { name: "exit-menu", message: "Go Back".grey },
   );
 

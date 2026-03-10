@@ -37,7 +37,11 @@ type PairWalletConnectResult = {
 
 type RuntimeActiveSession = {
   topic: string;
-  namespaces?: Record<string, { accounts?: string[] }>;
+  namespaces?: Record<string, {
+    accounts?: string[];
+    methods?: string[];
+    events?: string[];
+  }>;
   relay?: {
     protocol?: string;
   };
@@ -238,6 +242,23 @@ export type WalletConnectPendingRequestView = {
 const MAX_WC_URI_LENGTH = 4096;
 const MAX_SCOPE_LENGTH = 128;
 const MAX_CAPTURED_BUNDLES = 100;
+const WALLET_SEND_CALLS_METHODS = [
+  "wallet_getCapabilities",
+  "wallet_sendCalls",
+  "wallet_getCallsStatus",
+  "wallet_showCallsStatus",
+] as const;
+const WALLET_SEND_CALLS_DEPENDENT_SIGNING_METHODS = [
+  "personal_sign",
+  "eth_signTypedData",
+  "eth_signTypedData_v3",
+  "eth_signTypedData_v4",
+] as const;
+const WALLET_SEND_CALLS_DEPENDENT_ACCOUNT_METHODS = [
+  "eth_accounts",
+  "eth_requestAccounts",
+  "eth_chainId",
+] as const;
 
 let walletConnectCore: any | undefined = undefined;
 let walletKit: any | undefined = undefined;
@@ -571,6 +592,98 @@ const syncStoredWalletConnectSessionsFromRuntime = () => {
   persistKeychain();
 };
 
+const buildApprovedNamespaceMethods = (
+  namespaceKey: string,
+  methods: string[],
+) => {
+  const normalizedMethods = methods.filter((method) => {
+    return typeof method === "string" && method.length > 0;
+  });
+  const augmentedMethods = new Set(normalizedMethods);
+
+  if (!namespaceKey.startsWith("eip155")) {
+    return [...augmentedMethods.values()];
+  }
+
+  const needsWalletSendCallsDependencies = normalizedMethods.some((method) => {
+    return WALLET_SEND_CALLS_METHODS.includes(method as (typeof WALLET_SEND_CALLS_METHODS)[number]);
+  });
+
+  if (!needsWalletSendCallsDependencies) {
+    return [...augmentedMethods.values()];
+  }
+
+  for (const method of WALLET_SEND_CALLS_METHODS) {
+    augmentedMethods.add(method);
+  }
+  for (const method of WALLET_SEND_CALLS_DEPENDENT_SIGNING_METHODS) {
+    augmentedMethods.add(method);
+  }
+  for (const method of WALLET_SEND_CALLS_DEPENDENT_ACCOUNT_METHODS) {
+    augmentedMethods.add(method);
+  }
+
+  return [...augmentedMethods.values()];
+};
+
+const expandApprovedNamespaces = (
+  namespaces: RuntimeActiveSession["namespaces"],
+) => {
+  if (!isDefined(namespaces)) {
+    return {
+      changed: false,
+      namespaces: undefined,
+    };
+  }
+
+  let changed = false;
+  const expandedNamespaces = Object.entries(namespaces).reduce<
+    NonNullable<RuntimeActiveSession["namespaces"]>
+  >((acc, [namespaceKey, namespaceValue]) => {
+    const currentMethods = namespaceValue?.methods ?? [];
+    const nextMethods = buildApprovedNamespaceMethods(namespaceKey, currentMethods);
+    if (
+      nextMethods.length !== currentMethods.length
+      || nextMethods.some((method, index) => method !== currentMethods[index])
+    ) {
+      changed = true;
+    }
+
+    acc[namespaceKey] = {
+      ...namespaceValue,
+      methods: nextMethods,
+    };
+
+    return acc;
+  }, {});
+
+  return {
+    changed,
+    namespaces: expandedNamespaces,
+  };
+};
+
+const syncActiveWalletConnectSessionMethods = async (client: any) => {
+  const activeSessionMap = client.getActiveSessions() as Record<string, RuntimeActiveSession>;
+
+  for (const activeSession of Object.values(activeSessionMap)) {
+    const { changed, namespaces } = expandApprovedNamespaces(activeSession.namespaces);
+    if (!changed || !isDefined(namespaces)) {
+      continue;
+    }
+
+    await client.updateSession({
+      topic: activeSession.topic,
+      namespaces,
+    });
+
+    pushUILog(
+      `WalletConnect session ${activeSession.topic} updated with supplemental signing methods for wallet_sendCalls.`,
+      "log",
+    );
+  }
+};
+
 const attachWalletKitListeners = (client: any) => {
   if (walletKitListenersAttached) {
     return;
@@ -666,6 +779,7 @@ export const initializeWalletConnectKit = async () => {
     walletKit = client;
     attachWalletKitListeners(client);
     syncStoredWalletConnectSessionsFromRuntime();
+    await syncActiveWalletConnectSessionMethods(client);
     return client;
   })();
 
@@ -1686,9 +1800,12 @@ const buildApprovedNamespacesFromProposal = (
   for (const [namespaceKey, rawRequirement] of sourceEntries) {
     const requirement = rawRequirement as ProposalNamespaceRequirement;
     const chains = getChainsForNamespaceRequirement(namespaceKey, requirement);
-    const methods = (requirement.methods ?? []).filter((method) => {
-      return typeof method === "string" && method.length > 0;
-    });
+    const methods = buildApprovedNamespaceMethods(
+      namespaceKey,
+      (requirement.methods ?? []).filter((method) => {
+        return typeof method === "string" && method.length > 0;
+      }),
+    );
     const events = (requirement.events ?? []).filter((eventName) => {
       return typeof eventName === "string" && eventName.length > 0;
     });
