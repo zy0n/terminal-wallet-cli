@@ -73,6 +73,8 @@ type StealthScopeAddressEntry = {
   source: "known" | "session" | "profile";
 };
 
+const LEGACY_UNSCOPED_SCOPE_ID = "__legacy_unscoped__";
+
 const getCurrentChainScopedScopeID = (scopeID?: string): Optional<string> => {
   if (!isDefined(scopeID)) {
     return undefined;
@@ -117,6 +119,10 @@ const sortScopeIDs = (scopeIDs: string[]) => {
 };
 
 const formatScopeName = (scopeID: string) => {
+  if (scopeID === LEGACY_UNSCOPED_SCOPE_ID) {
+    return "Legacy Unscoped Profiles";
+  }
+
   if (scopeID === getDefaultActiveStealthScopeID()) {
     return `Internal Scope ${scopeID}`;
   }
@@ -126,6 +132,20 @@ const formatScopeName = (scopeID: string) => {
   }
 
   return `Scope ${scopeID}`;
+};
+
+const isLegacyUnscopedProfile = (profile: {
+  scopeID?: string;
+  signerStrategyScopeID?: string;
+  slot?: number;
+}) => {
+  return !isDefined(profile.scopeID)
+    && !isDefined(profile.signerStrategyScopeID)
+    && !isDefined(profile.slot);
+};
+
+const isLegacyUnscopedScope = (scopeID: string) => {
+  return scopeID === LEGACY_UNSCOPED_SCOPE_ID;
 };
 
 const formatPublicBalanceSummary = async (address?: string) => {
@@ -234,7 +254,13 @@ const collectStealthAppScopeIDs = () => {
     ...listKnownEphemeralSessionScopeIDs(),
   ]);
 
+  let hasLegacyUnscopedProfiles = false;
+
   for (const profile of listStealthProfiles()) {
+    if (isLegacyUnscopedProfile(profile)) {
+      hasLegacyUnscopedProfiles = true;
+    }
+
     const preferredScopeID = getProfileScopeID(profile);
     if (isDefined(preferredScopeID)) {
       scopeIDs.add(preferredScopeID);
@@ -245,10 +271,18 @@ const collectStealthAppScopeIDs = () => {
     }
   }
 
+  if (hasLegacyUnscopedProfiles) {
+    scopeIDs.add(LEGACY_UNSCOPED_SCOPE_ID);
+  }
+
   return sortScopeIDs([...scopeIDs.values()]);
 };
 
 const getProfilesForScope = (scopeID: string) => {
+  if (isLegacyUnscopedScope(scopeID)) {
+    return listStealthProfiles().filter((profile) => isLegacyUnscopedProfile(profile));
+  }
+
   return listStealthProfiles().filter((profile) => {
     return getStealthSignerScopeCandidatesForProfile(profile).includes(scopeID);
   });
@@ -285,7 +319,9 @@ const getKnownAddressesForScope = (scopeID: string): StealthScopeAddressEntry[] 
     }
   }
 
-  const sessionScope = getEphemeralSessionScope(scopeID);
+  const sessionScope = isLegacyUnscopedScope(scopeID)
+    ? undefined
+    : getEphemeralSessionScope(scopeID);
   if (isDefined(sessionScope) && isDefined(sessionScope.lastKnownAddress)) {
     addEntry({
       key: `${scopeID}:${sessionScope.lastKnownAddress.toLowerCase()}`,
@@ -692,6 +728,9 @@ const formatStealthProfileLine = (
 
 const getStealthProfilesForScope = (scopeID: string) => {
   return listStealthProfiles().filter((profile) => {
+    if (isLegacyUnscopedScope(scopeID)) {
+      return isLegacyUnscopedProfile(profile);
+    }
     return getStealthSignerScopeCandidatesForProfile(profile).includes(scopeID);
   });
 };
@@ -1127,7 +1166,9 @@ const promptCreateUserScope = async (): Promise<Optional<string>> => {
 
 const buildStealthScopeHeader = async (scopeID: string) => {
   const isActiveScope = getActiveEphemeralSessionScopeID() === scopeID;
-  const scope = getEphemeralSessionScope(scopeID);
+  const scope = isLegacyUnscopedScope(scopeID)
+    ? undefined
+    : getEphemeralSessionScope(scopeID);
   const addresses = getKnownAddressesForScope(scopeID);
   const profiles = getProfilesForScope(scopeID);
   const referenceAddress = scope?.lastKnownAddress ?? addresses[0]?.address;
@@ -1138,6 +1179,9 @@ const buildStealthScopeHeader = async (scopeID: string) => {
     `${"│".grey} active=${isActiveScope ? "yes".green : "no".grey} · addresses=${addresses.length} · profiles=${profiles.length}`,
     `${"│".grey} last index=${scope?.lastKnownIndex ?? "n/a"} · ratchets=${scope?.ratchetCount ?? 0}`,
     `${"│".grey} last address=${shortAddress(referenceAddress)} · balances=${publicBalances}`,
+    ...(isLegacyUnscopedScope(scopeID)
+      ? [`${"│".grey} legacy profiles without explicit scope metadata`]
+      : []),
     `${"└─".grey}`,
   ].join("\n");
 };
@@ -1145,20 +1189,22 @@ const buildStealthScopeHeader = async (scopeID: string) => {
 const buildStealthScopeChoices = (scopeID: string) => {
   const addresses = getKnownAddressesForScope(scopeID);
   const activeProfileID = getStealthProfileSummary().activeProfileID;
-  const choices: any[] = [
-    {
-      name: "set-active-scope",
-      message: getActiveEphemeralSessionScopeID() === scopeID
-        ? `Active scope = ${formatScopeName(scopeID)}`.green
-        : `Set active scope to ${formatScopeName(scopeID)}`,
-    },
-    { name: "poll-scope", message: "Poll scope".cyan },
-    { name: "manual-ratchet", message: "Ratchet scope" },
-    { name: "set-index", message: "Set scope index" },
-    { name: "scope-policy", message: "Update ratchet policy" },
-  ];
+  const choices: any[] = isLegacyUnscopedScope(scopeID)
+    ? []
+    : [
+      {
+        name: "set-active-scope",
+        message: getActiveEphemeralSessionScopeID() === scopeID
+          ? `Active scope = ${formatScopeName(scopeID)}`.green
+          : `Set active scope to ${formatScopeName(scopeID)}`,
+      },
+      { name: "poll-scope", message: "Poll scope".cyan },
+      { name: "manual-ratchet", message: "Ratchet scope" },
+      { name: "set-index", message: "Set scope index" },
+      { name: "scope-policy", message: "Update ratchet policy" },
+    ];
 
-  if (scopeID !== getDefaultActiveStealthScopeID()) {
+  if (!isLegacyUnscopedScope(scopeID) && scopeID !== getDefaultActiveStealthScopeID()) {
     choices.push({ name: "remove-scope", message: "Remove scope" });
   }
 
@@ -1196,6 +1242,10 @@ const pollScopeAddress = async (
         return undefined;
       },
     );
+  }
+
+  if (isLegacyUnscopedScope(scopeID)) {
+    return undefined;
   }
 
   return setCurrentEphemeralWalletSession(encryptionKey, scopeID).catch((error) => {
@@ -1825,7 +1875,9 @@ const promptStealthProfileScopeMode = async (existing?: {
   const activeScopeID = getActiveEphemeralSessionScopeID();
   const existingHasSlot = isDefined(existing?.slot);
   const existingScopeID = existing?.scopeID?.trim();
-  const defaultChoice = existingHasSlot
+  const defaultChoice = isLegacyUnscopedProfile(existing ?? {})
+    ? "legacy-unscoped"
+    : existingHasSlot
     ? "slot-derived"
     : existingScopeID && existingScopeID !== activeScopeID
       ? "custom-scope"
@@ -1846,6 +1898,10 @@ const promptStealthProfileScopeMode = async (existing?: {
       {
         name: "slot-derived",
         message: "Derive from slot number (slot-<n>)",
+      },
+      {
+        name: "legacy-unscoped",
+        message: "Keep profile unscoped (legacy compatibility)",
       },
     ],
     initial: defaultChoice,
@@ -1877,6 +1933,13 @@ const promptStealthProfileScopeMode = async (existing?: {
 
     return {
       scopeID,
+      slot: undefined,
+    };
+  }
+
+  if (mode === "legacy-unscoped") {
+    return {
+      scopeID: undefined,
       slot: undefined,
     };
   }

@@ -9,6 +9,7 @@ type LiveSelectOptions = {
   message: HeaderValue;
   choices?: ChoiceValue;
   refreshIntervalMs?: number;
+  minVisibleChoices?: number;
   [key: string]: any;
 };
 
@@ -20,7 +21,14 @@ const resolveValue = async (value?: HeaderValue): Promise<string> => {
 };
 
 export const createLiveSelect = (options: LiveSelectOptions) => {
-  const { refreshIntervalMs = 1200, header, message, choices, ...rest } = options;
+  const {
+    refreshIntervalMs = 1200,
+    minVisibleChoices = 4,
+    header,
+    message,
+    choices,
+    ...rest
+  } = options;
   const prompt = new Select({
     ...rest,
     choices: [],
@@ -32,6 +40,51 @@ export const createLiveSelect = (options: LiveSelectOptions) => {
   const originalRun = prompt.run.bind(prompt);
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let refreshPromise: Promise<void> | undefined;
+  let resolvedHeader = "";
+  let resolvedMessage = "";
+
+  const clearScreen = () => {
+    if (!process.stdout.isTTY) {
+      return;
+    }
+
+    prompt.stdout.write("\x1b[?25l");
+    prompt.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  };
+
+  const showCursor = () => {
+    if (!process.stdout.isTTY) {
+      return;
+    }
+
+    prompt.stdout.write("\x1b[?25h");
+  };
+
+  const lineCount = (value: string) => {
+    if (!value.length) {
+      return 0;
+    }
+    return value.split(/\r?\n/).length;
+  };
+
+  const updateLayout = () => {
+    if (!process.stdout.isTTY) {
+      return;
+    }
+
+    const terminalRows = prompt.stdout.rows ?? process.stdout.rows ?? 24;
+    const reservedLines = lineCount(resolvedHeader) + lineCount(resolvedMessage) + 6;
+    const visibleChoices = Math.max(minVisibleChoices, terminalRows - reservedLines);
+    prompt.options.limit = visibleChoices;
+  };
+
+  const resolveFrame = async () => {
+    resolvedHeader = await resolveValue(header);
+    resolvedMessage = await resolveValue(message);
+    prompt.options.header = resolvedHeader;
+    prompt.options.message = resolvedMessage;
+    updateLayout();
+  };
 
   const clearRefreshTimer = () => {
     if (refreshTimer) {
@@ -75,8 +128,10 @@ export const createLiveSelect = (options: LiveSelectOptions) => {
   const refreshPromptState = async (renderAfterRefresh = false) => {
     if (!refreshPromise) {
       refreshPromise = (async () => {
+        await resolveFrame();
         await refreshChoices();
         if (renderAfterRefresh && !prompt.state.submitted) {
+          clearScreen();
           await originalRender();
         }
       })().finally(() => {
@@ -88,6 +143,7 @@ export const createLiveSelect = (options: LiveSelectOptions) => {
 
   prompt.run = async function run() {
     await refreshPromptState();
+    clearScreen();
 
     if (refreshIntervalMs > 0) {
       refreshTimer = setInterval(() => {
@@ -102,6 +158,7 @@ export const createLiveSelect = (options: LiveSelectOptions) => {
       return await originalRun();
     } finally {
       clearRefreshTimer();
+      showCursor();
     }
   };
 
