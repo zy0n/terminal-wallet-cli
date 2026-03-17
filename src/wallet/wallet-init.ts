@@ -39,7 +39,10 @@ import { getSaltedPassword } from "./wallet-password";
 import { confirmGetPasswordPrompt } from "../ui/password-ui";
 import { computePasswordHash, getIV } from "../util/crypto";
 import configDefaults from "../config/config-defaults";
-import { syncCurrentEphemeralWallet } from "./ephemeral-wallet-manager";
+import {
+  getActiveEphemeralSessionScopeID,
+  syncCurrentEphemeralWallet,
+} from "./ephemeral-wallet-manager";
 
 export const generateKeychainPrompt = async (
   index: number = 0,
@@ -294,7 +297,10 @@ export const initializeWalletSystems = async () => {
     await initializeEthersWallet();
 
     if (isDefined(walletManager.hashedPassword)) {
-      await syncCurrentEphemeralWallet(walletManager.hashedPassword).catch(
+      await syncCurrentEphemeralWallet(
+        walletManager.hashedPassword,
+        getActiveEphemeralSessionScopeID(),
+      ).catch(
         (err: Error) => {
           console.log(
             `Failed to auto-sync ephemeral wallet at startup: ${err.message}`.yellow,

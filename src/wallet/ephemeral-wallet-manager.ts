@@ -27,6 +27,7 @@ type RailgunWalletWithEphemeralSignerProvider = {
   setEphemeralWalletDerivationStrategy?: (
     strategy: EphemeralWalletDerivationStrategy,
   ) => void;
+  setCurrentEphemeralWallet?: (wallet: HDNodeWallet) => Promise<void>;
 };
 
 type EphemeralAccountWithSigner = {
@@ -140,13 +141,35 @@ const applyScopedDerivationStrategy = (
   }
 };
 
+const getConfiguredRailgunWallet = (
+  walletID: string,
+  scopeID?: string,
+) => {
+  applyScopedDerivationStrategy(walletID, scopeID);
+  return fullWalletForID(walletID);
+};
+
+const setCurrentEphemeralWalletOverride = async (
+  walletID: string,
+  scopeID: Optional<string>,
+  signer: HDNodeWallet,
+) => {
+  const railgunWallet = getConfiguredRailgunWallet(
+    walletID,
+    scopeID,
+  ) as ReturnType<typeof fullWalletForID> & RailgunWalletWithEphemeralSignerProvider;
+
+  if (isDefined(railgunWallet.setCurrentEphemeralWallet)) {
+    await railgunWallet.setCurrentEphemeralWallet(signer);
+  }
+};
+
 const getEphemeralKeyManager = (
   walletID: string,
   encryptionKey: string,
   scopeID?: string,
 ) => {
-  applyScopedDerivationStrategy(walletID, scopeID);
-  const railgunWallet = fullWalletForID(walletID);
+  const railgunWallet = getConfiguredRailgunWallet(walletID, scopeID);
   return new EphemeralKeyManager(railgunWallet, encryptionKey);
 };
 
@@ -459,7 +482,14 @@ export const syncCurrentEphemeralWallet = async (
   await autoSyncEphemeralIndex(manager);
 
   const currentAccount = await manager.getCurrentAccount(chainId);
+  assertEphemeralAccountSigner(currentAccount);
+
   const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex(chainId);
+  await setCurrentEphemeralWalletOverride(
+    walletID,
+    normalizedScopeID,
+    currentAccount.signer,
+  );
   const currentAddress = currentAccount.address;
   cacheEphemeralState(walletID, currentIndex, currentAddress);
   if (isDefined(normalizedScopeID)) {
@@ -498,6 +528,11 @@ export const setCurrentEphemeralWalletSession = async (
   assertEphemeralAccountSigner(currentAccount);
 
   const currentIndex = await fullWalletForID(walletID).getEphemeralKeyIndex(chainId);
+  await setCurrentEphemeralWalletOverride(
+    walletID,
+    normalizedScopeID,
+    currentAccount.signer,
+  );
   cacheEphemeralState(walletID, currentIndex, currentAccount.address);
   if (isDefined(normalizedScopeID)) {
     updateScopeState(normalizedScopeID, currentIndex, currentAccount.address, false);
@@ -539,7 +574,14 @@ export const ratchetEphemeralWalletOnSuccess = async (
 
   const manager = getEphemeralKeyManager(synced.walletID, encryptionKey, scopeID);
   const nextAccount = await manager.getNextAccount(chainId);
+  assertEphemeralAccountSigner(nextAccount);
+
   const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex(chainId);
+  await setCurrentEphemeralWalletOverride(
+    synced.walletID,
+    normalizeScopeID(scopeID),
+    nextAccount.signer,
+  );
   cacheEphemeralState(synced.walletID, nextIndex, nextAccount.address);
   const normalizedScopeID = normalizeScopeID(scopeID);
   if (isDefined(normalizedScopeID)) {
@@ -566,7 +608,14 @@ export const manualRatchetEphemeralWallet = async (
 
   const manager = getEphemeralKeyManager(synced.walletID, encryptionKey, scopeID);
   const nextAccount = await manager.getNextAccount(chainId);
+  assertEphemeralAccountSigner(nextAccount);
+
   const nextIndex = await fullWalletForID(synced.walletID).getEphemeralKeyIndex(chainId);
+  await setCurrentEphemeralWalletOverride(
+    synced.walletID,
+    normalizeScopeID(scopeID),
+    nextAccount.signer,
+  );
   cacheEphemeralState(synced.walletID, nextIndex, nextAccount.address);
   const normalizedScopeID = normalizeScopeID(scopeID);
   if (isDefined(normalizedScopeID)) {
@@ -605,6 +654,13 @@ export const setEphemeralWalletIndex = async (
 
   const manager = getEphemeralKeyManager(walletID, encryptionKey, scopeID);
   const currentAccount = await manager.getCurrentAccount(chainId);
+  assertEphemeralAccountSigner(currentAccount);
+
+  await setCurrentEphemeralWalletOverride(
+    walletID,
+    normalizeScopeID(scopeID),
+    currentAccount.signer,
+  );
   cacheEphemeralState(walletID, index, currentAccount.address);
   const normalizedScopeID = normalizeScopeID(scopeID);
   if (isDefined(normalizedScopeID)) {

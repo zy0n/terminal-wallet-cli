@@ -3,7 +3,6 @@ import {
     EphemeralWalletDerivationStrategy,
 } from "@railgun-community/engine";
 import { createHash } from "crypto";
-import { HDNodeWallet } from "ethers";
 
 const DEFAULT_SCOPE = "0";
 const MAX_SCOPE_ID_LENGTH = 128;
@@ -80,31 +79,21 @@ class StealthSignerProvider implements EphemeralSignerProvider {
         return this.currentScope;
     };
 
-    getDerivationPath = (chainId: bigint, index: number): string => {
+    getPathSuffix = (index: number): string => {
         if (!Number.isInteger(index) || index < 0) {
             throw new Error("Ephemeral index must be a non-negative integer.");
         }
 
-        const scopeComponent = toBip32ScopeComponent(this.currentScope);
-
-        return `m/44'/60'/0'/7702'/${chainId}'/${scopeComponent}'/${index}'`;
-    };
-
-    deriveWallet = (
-        mnemonic: string,
-        chainId: bigint,
-        index: number,
-    ): HDNodeWallet => {
         if (this.currentStrategy) {
-            return this.currentStrategy(mnemonic, chainId, index);
+            return this.currentStrategy(index);
         }
 
-        const path = this.getDerivationPath(chainId, index);
-        return HDNodeWallet.fromPhrase(mnemonic, undefined, path);
+        const scopeComponent = toBip32ScopeComponent(this.currentScope);
+        return `${scopeComponent}'/${index}'`;
     };
 
-    getDBPath = (id: string, chainId: bigint): string[] => {
-        return [id, chainId.toString(10), this.currentScope];
+    getDBPathSuffix = (): string[] => {
+        return [this.currentScope];
     };
 
 }
