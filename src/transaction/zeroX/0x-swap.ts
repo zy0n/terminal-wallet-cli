@@ -51,6 +51,16 @@ import { getTransactionGasDetails } from "../private/private-tx";
 import { getCurrentEthersWallet } from "../../wallet/public-utils";
 import { getCurrentKnownEphemeralState } from "../../wallet/ephemeral-wallet-manager";
 
+const MIN_GAS_LIMIT_BUFFER_7702 = 500_000n;
+
+const resolve7702MinGasLimit = (minGasLimit?: bigint): bigint => {
+  if (!isDefined(minGasLimit)) {
+    throw new Error("Missing 0x swap minGasLimit.");
+  }
+
+  return minGasLimit + MIN_GAS_LIMIT_BUFFER_7702;
+};
+
 export const updateApiKey = () => {
   const zeroXApiKey = configDefaults.apiKeys.zeroXApi;
   ZeroXConfig.API_KEY = zeroXApiKey;
@@ -125,7 +135,7 @@ export const getZer0XSwapInputs = async (
       nfts: [],
     };
     // hardcode min gas limit for now. 
-    const minGasLimit  = 5_000_000n;
+    const minGasLimit = 0n; // 5_000_000n;
     // const { minGasLimit } = swap.config;
     const recipeOutput: RecipeOutput = await swap.getRecipeOutput(recipeInput);
     const { crossContractCalls, erc20AmountRecipients } = recipeOutput;
@@ -224,9 +234,8 @@ export const getZer0XSwapTransactionGasEstimate = async (
     relayAdaptUnshieldERC20Amounts,
     relayAdaptShieldERC20Addresses,
     crossContractCalls,
-    minGasLimit,
   } = zer0XSwapInputs;
-
+  const minGasLimit  = 0n; // 5_000_000n;
   const { gasEstimate } = await gasEstimateForUnprovenCrossContractCalls7702(
     txIDVersion,
     chainName,
@@ -277,9 +286,8 @@ export const getProvedZer0XSwapTransaction = async (
     relayAdaptUnshieldERC20Amounts,
     relayAdaptShieldERC20Addresses,
     crossContractCalls,
-    minGasLimit,
   } = zer0XSwapInputs;
-
+  const minGasLimit  = 0n; // 5_000_000n;
   const {
     broadcasterFeeERC20Recipient,
     overallBatchMinGasPrice,
