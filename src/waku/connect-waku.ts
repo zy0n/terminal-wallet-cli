@@ -98,8 +98,10 @@ export const startWakuClient = async (chainName: NetworkName) => {
   }
   const chain = getChainForName(chainName);
   const peerOverrides = remoteConfig.additionalDirectPeers ?? [];
-  broadcasterOptions.additionalDirectPeers = peerOverrides;
-  broadcasterOptions.pubSubTopic = remoteConfig.wakuPubSubTopic;
+  broadcasterOptions.additionalDirectPeers = [];
+  broadcasterOptions.pubSubTopic = '/waku/2/rs/5/1'; //remoteConfig.wakuPubSubTopic;
+  // @ts-expect-error
+  broadcasterOptions.enableHealthcheckLogs = true;
   pushUILog(`Starting Waku Client on ${chainName} with pubSubTopic ${remoteConfig.wakuPubSubTopic} and ${peerOverrides.length} additional direct peers.`, "log");
   if(isDefined(remoteConfig.trustedFeeSigner)){
     broadcasterOptions.trustedFeeSigner = remoteConfig.trustedFeeSigner;
